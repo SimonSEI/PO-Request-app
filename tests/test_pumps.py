@@ -3735,31 +3735,70 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P._delivery_in('Delivery: 2-3 weeks after receipt of order'), 'It will take 2-3 weeks to deliver after approval.')
 
     def test_every_accounts_maintenance_is_checked_done(self):
-        """Nov 2 2026 (the office: "make sure that it all gets done"): from the 20th, a to-do per vendor names the
-        month's maintenance visits with no report yet; after the month, the ones still missing are missed. An
-        account drops off once its report is in."""
+        """Nov 2026 (the office: "make sure that it all gets done"; then: it flagged sites that were serviced). A
+        visit is made when its report is in OR a Wettech bill for the site is dated in the month, names matched
+        loosely (Pebblebrooke, Honda of Ft Myers, Lely, Sunshine Lake Park - Port Charlotte). Lists are split into
+        "No visit found" and "Visit billed, report missing"; only Wettech's sites; quarterly and monthly apart."""
         conn = P._conn()
         try:
-            P.check_maintenance_done(date(2026, 11, 2))
-            missed = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech'").fetchone()
-            self.assertIn('October maintenance missed', missed['title'])
-            self.assertIsNone(conn.execute("SELECT 1 FROM pump_todos WHERE key='maint-check:2026-11:Wettech'").fetchone(),
-                              'this month is only checked from the 20th')
-            name = next(r['account'] for r in P.maint_schedule(conn, date(2026, 10, 1)) if r['vendor'] == 'Wettech')
-            self.assertIn(name, missed['detail'])
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            october = [r for r in P.maint_schedule(conn, date(2026, 10, 1)) if r['vendor'] == 'Wettech']
+            accounts = {r['account'] for r in october}
+            self.assertFalse({'Warm Springs Comm. Assoc.', 'Hodges Funeral Home'} & accounts,
+                             'Naples Electric and SiteOne do those - not Wettech visits')
+            quarterly = sorted(r['account'] for r in october if r['frequency'] == 'quarterly')
+            monthly = sorted(r['account'] for r in october if r['frequency'] == 'monthly')
+            self.assertIn('Charlotte County - Sunshine Lake Park', monthly)
+            self.assertIn('Quail Run', monthly)
+            self.assertNotIn('Quail Run', quarterly)
+            # October as it was: Wettech billed every site but FGCU PGA, Miromar Outlets and University Square CDD,
+            # some under other names.
+            variants = {'Pebblebrook HOA': 'Pebblebrooke', 'Honda Fort Myers': 'Honda of Ft Myers',
+                        'Lely CDD - Lely Pump Station': 'Lely',
+                        'Charlotte County - Sunshine Lake Park': 'Sunshine Lake Park - Port Charlotte'}
+            unbilled = {'FGCU - PGA Program', 'Miromar Outlets', 'University Square CDD'}
+            for a in sorted(accounts - unbilled):
+                conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, created_at) "
+                             "VALUES ('bill', 'filed', 'Wettech', ?, '', '2026-10-14', 'bill.pdf', '2026-10-15 09:00:00')",
+                             (variants.get(a, a),))
+            # Pebblebrook also has its report in.
             conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, file_name, created_at) "
-                         "VALUES ('report', 'filed', 'Wettech', ?, '', 'report.pdf', '2026-10-15 10:00:00')", (name,))
+                         "VALUES ('report', 'filed', 'Wettech', 'Pebblebrooke', '', 'report.pdf', '2026-10-16 09:00:00')")
             conn.commit()
             P.check_maintenance_done(date(2026, 11, 2))
-            detail = conn.execute("SELECT detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech'").fetchone()['detail']
-            self.assertNotIn(name + ',', detail + ',', 'its report is in')
-            P.check_maintenance_done(date(2026, 11, 21))
-            self.assertIn('November maintenance not done yet',
-                          conn.execute("SELECT title FROM pump_todos WHERE key='maint-check:2026-11:Wettech'").fetchone()['title'])
+            q = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
+            missing = q['detail'].split('No visit found (no bill, no report): ')[1].split('.')[0].split(', ')
+            self.assertEqual(sorted(missing), sorted(unbilled & set(quarterly)))
+            self.assertIn('no visit found (missed)', q['title'])
+            self.assertIn('Visit billed, report missing:', q['detail'])
+            self.assertNotIn('Pebblebrook HOA', q['detail'].split('Visit billed, report missing:')[1], 'its report is in')
+            mo = conn.execute("SELECT title, done_at FROM pump_todos WHERE key='maint-check:2026-10:Wettech:monthly'").fetchone()
+            self.assertIn('report', mo['title'], 'the monthly sites were billed - only their reports are missing')
+            # A site drops off when its bill comes in; with none left, only "report missing" stays.
+            for a in unbilled:
+                conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, created_at) "
+                             "VALUES ('bill', 'filed', 'Wettech', ?, '', '2026-10-20', 'bill.pdf', '2026-10-21 09:00:00')", (a,))
+            conn.commit()
+            P.check_maintenance_done(date(2026, 11, 2))
+            q = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
+            self.assertNotIn('No visit found', q['detail'])
+            self.assertIn('reports missing', q['title'])
+            # This month only from the 20th.
+            self.assertIsNone(conn.execute("SELECT 1 FROM pump_todos WHERE key LIKE 'maint-check:2026-11:%'").fetchone())
             conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            conn.execute("DELETE FROM pump_docs WHERE file_name IN ('bill.pdf', 'report.pdf')")
             conn.commit()
         finally:
             conn.close()
+
+    def test_site_names_match_close_variants(self):
+        for a, b in (('Pebblebrooke', 'Pebblebrook HOA'), ('Honda of Ft Myers', 'Honda Fort Myers'),
+                     ('Lely', 'Lely CDD - Lely Pump Station'),
+                     ('Sunshine Lake Park - Port Charlotte', 'Charlotte County - Sunshine Lake Park')):
+            self.assertTrue(P.site_name_matches(a, b), (a, b))
+        for a, b in (('Miromar Outlets', 'University Square CDD'), ('FGCU - PGA Program', 'FGCU Library'),
+                     ('Huntington Lakes Phase 3', 'Huntington Lakes Phase 5')):
+            self.assertFalse(P.site_name_matches(a, b), (a, b))
 
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""

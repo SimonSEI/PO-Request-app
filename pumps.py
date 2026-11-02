@@ -12628,6 +12628,16 @@ def _drop_irrigation_quote_items(c, now):
                       (now, 'Pumps', 'not pump work', f'{t} is irrigation work, not pump work - taken off', cid))
 
 
+def _apply_maint_vendors(c, now):
+    """Once (Nov 2026, the office): Warm Springs' pump maintenance is done by Naples Electric and Hodges Funeral
+    Home's by SiteOne - not Wettech visits."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('maint_vendor_nov26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for name, v in (('Warm Springs Comm. Assoc.', 'Naples Electric'), ('Hodges Funeral Home', 'SiteOne')):
+        c.execute('UPDATE pump_maint_accounts SET vendor=? WHERE name=?', (v, name))
+
+
 def _apply_wild_blue_oct28(c, now):
     """Once (Oct 28 2026, the office's updated sheet): Wild Blue is 1 pump 2 filters, JAN/APR/JULY/OCT,
     $250, included with pump maintenance (Wettech - still no diver)."""
@@ -13041,6 +13051,13 @@ def init_account_tables(c):
         c.execute('ALTER TABLE pump_maint_accounts ADD COLUMN report_only INTEGER DEFAULT 0')
     except sqlite3.OperationalError:
         pass
+    try:
+        # vendor: who does the pump maintenance (Nov 2026) - Wettech unless set; only Wettech's visits are
+        # Justin's to be told of and checked for a report.
+        c.execute("ALTER TABLE pump_maint_accounts ADD COLUMN vendor TEXT DEFAULT 'Wettech'")
+    except sqlite3.OperationalError:
+        pass
+
     for col, decl in (('jobber_names', "TEXT DEFAULT ''"), ('complimentary', 'INTEGER DEFAULT 0'),
                       ('quote', "TEXT DEFAULT '{}'")):
         try:
@@ -13093,6 +13110,7 @@ def init_account_tables(c):
     _unschedule_service_calls(c, now)
     _bill_checked_when_invoiced(c, now)
     _drop_irrigation_quote_items(c, now)
+    _apply_maint_vendors(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
@@ -13442,7 +13460,7 @@ def h_scada_update(actor, sid):
         conn.close()
 
 
-MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor_cost', 'naples_electric', 'our_bill',
+MAINT_FIELDS = ('name', 'kind', 'joined', 'equipment', 'address', 'months', 'vendor', 'vendor_cost', 'naples_electric', 'our_bill',
                 'notes', 'repairs_by', 'follow_up', 'jobber_client_id', 'jobber_client_name', 'jobber_property_id',
                 'jobber_property_label', 'jobber_job_id', 'jobber_job_label')
 
@@ -16171,6 +16189,37 @@ def _month_arg(text, today=None):
     return (today or _today()).replace(day=1)
 
 
+_SITE_STOP = {'hoa', 'cdd', 'inc', 'llc', 'of', 'the', 'and', 'assoc', 'association', 'comm', 'community', 'co',
+              'county', 'pump', 'pumps', 'station', 'stations', 'master', 'condo', 'condominium', 'homeowners',
+              'property', 'owners', 'management', 'mgmt', 'services', 'c', 'o', 'at'}
+
+
+def _site_tokens(name):
+    """A site name's telling words: "Honda of Ft Myers" -> {honda, fort, myers}; "Lely CDD - Lely Pump Station" ->
+    {lely}; c/o (the management company) left off."""
+    t = re.split(r'\s+c/o\s+', (name or '').lower())[0]
+    t = re.sub(r'\bft\.?\b', 'fort', re.sub(r'\bst\.?\b', 'saint', t.replace('&', ' and ')))
+    return {w for w in re.findall(r'[a-z0-9]+', t) if w not in _SITE_STOP and (len(w) > 2 or w.isdigit())}
+
+
+def _tok_eq(a, b):
+    """Same word, allowing a close spelling ("pebblebrooke" / "pebblebrook")."""
+    return a == b or (min(len(a), len(b)) >= 5 and (a.startswith(b) or b.startswith(a)) and abs(len(a) - len(b)) <= 2)
+
+
+def site_name_matches(a, b):
+    """Two names for the same site (Nov 2026): one's telling words all found in the other - "Pebblebrooke" and
+    "Pebblebrook HOA", "Honda of Ft Myers" and "Honda Fort Myers", "Lely" and "Lely CDD - Lely Pump Station",
+    "Sunshine Lake Park - Port Charlotte" and "Charlotte County - Sunshine Lake Park"."""
+    ta, tb = _site_tokens(a), _site_tokens(b)
+    if not ta or not tb:
+        return False
+    small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if not any(len(w) >= 4 for w in small):
+        return False
+    return all(any(_tok_eq(w, x) for x in big) for w in small)
+
+
 def maint_schedule(conn, month_date):
     """Every maintenance visit due in a month, one row per account and vendor."""
     key = month_date.strftime('%Y-%m')
@@ -16185,19 +16234,26 @@ def maint_schedule(conn, month_date):
         "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE (kind='report' "
         "OR (kind='bill' AND vendor='Gulfshore')) AND status != 'dismissed' AND created_at >= ? AND created_at < ?",
         (key, nxt.isoformat()))]
+    bills = [dict(r) for r in conn.execute(
+        "SELECT vendor, client_name, site, COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) AS date FROM pump_docs "
+        "WHERE kind='bill' AND status != 'dismissed' AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) >= ? "
+        "AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) < ?", (key + '-01', nxt.isoformat()))]
     dive_ids = {s['id'] for s in sites_for_month(conn, month_date)}
     rows = []
     for a in accounts(conn):
         due = []
         p, l = a['pump'], a['lake']
-        if p and p.get('active') and (p.get('monthly') or month_date.month in _month_list(p.get('months'))):
-            due.append(('Wettech', p.get('equipment') or p.get('kind') or 'Pump', p.get('address') or '', ''))
+        # Only Wettech's pump visits (Warm Springs is Naples Electric's, Hodges Funeral Home SiteOne's - Nov 2026).
+        if p and p.get('active') and (p.get('vendor') or 'Wettech') == 'Wettech' \
+                and (p.get('monthly') or month_date.month in _month_list(p.get('months'))):
+            due.append(('Wettech', p.get('equipment') or p.get('kind') or 'Pump', p.get('address') or '', '',
+                        'monthly' if p.get('monthly') else 'quarterly'))
         if l and l['id'] in dive_ids:
             due.append(('Gulfshore', l.get('equipment') or 'Lake', l.get('address') or '',
                         'on hold - ' + (l.get('status_note') or 'waiting on the client') if l.get('status') == 'hold'
-                        else ''))
+                        else '', 'quarterly' if _month_list(l.get('months')) else 'monthly'))
         names = _account_aliases(a)
-        for vendor, what, where, hold in due:
+        for vendor, what, where, hold, freq in due:
             n = notices.get((a['name'], vendor))
             if not n and vendor == 'Gulfshore' and dive_mail:
                 n = {'notified_at': dive_mail['sent_at'], 'notified_by': dive_mail['sent_by'],
@@ -16206,10 +16262,14 @@ def maint_schedule(conn, month_date):
                              and key <= (v.get('since') or '') < nxt.isoformat()
                              and _is_account(names, v.get('account'))), '')
             report = next((r['created_at'][:10] for r in reports if r['vendor'] == vendor and (
-                _is_account(names, r['client_name']) or
+                _is_account(names, r['client_name']) or any(site_name_matches(x, r['client_name']) for x in names) or
                 fuzzy_has(_core_name(a['name']), f"{r['site']} {r['file_name']}"))), '')
+            # A bill from the vendor for the site dated in the month is the visit made, report or not (Nov 2026).
+            billed = next((b['date'] for b in bills if b['vendor'] == vendor and (
+                _is_account(names, b['client_name']) or any(site_name_matches(x, b['client_name']) or
+                                                            site_name_matches(x, b['site']) for x in names))), '')
             rows.append({'account': a['name'], 'vendor': vendor, 'what': what, 'where': where, 'hold': hold,
-                         'notified': n, 'approved': approved, 'report': report})
+                         'notified': n, 'approved': approved, 'report': report, 'billed': billed, 'frequency': freq})
     rows.sort(key=lambda r: (bool(r['notified']), r['vendor'], r['account'].lower()))
     return rows
 
@@ -16218,9 +16278,12 @@ MAINT_CHECK_FROM_DAY = 20   # from this day of the month, visits with no report 
 
 
 def check_maintenance_done(today=None):
-    """Every account's monthly or quarterly maintenance done, per the Accounts settings (the office, Nov 2 2026:
-    "just make sure that it all gets done"). From the 20th: a to-do per vendor naming this month's visits with no
-    report yet; after the month: the ones still missing, as missed. Each closes itself when the reports are in."""
+    """Every account's monthly or quarterly maintenance done, per the Accounts settings (the office, Nov 2026:
+    "just make sure that it all gets done"). A visit counts as made when its service report is in OR the vendor's
+    bill for the site is dated in the month. Per vendor and per schedule (quarterly / monthly, never mixed), a
+    to-do lists "No visit found" (no bill, no report - the truly missed) and "Visit billed, report missing". From
+    the 20th for this month, and for last month as missed; each site drops off as its bill or report comes in, and
+    the to-do closes when both lists are empty. Only Wettech's (and Jordan's) sites are checked."""
     today = today or _today()
     first = today.replace(day=1)
     months = [((first - timedelta(days=1)).replace(day=1), True)]   # last month: anything left was missed
@@ -16229,25 +16292,35 @@ def check_maintenance_done(today=None):
     conn = _conn()
     try:
         for m, over in months:
-            rows = [r for r in maint_schedule(conn, m) if not r['report'] and not r['hold']]
+            ym, label = m.strftime('%Y-%m'), m.strftime('%B')
+            rows = [r for r in maint_schedule(conn, m) if not r['hold']]
             for vendor, who in (('Wettech', 'Wettech (Justin / Tom)'), ('Gulfshore', 'Jordan (Gulfshore)')):
-                key = f"maint-check:{m.strftime('%Y-%m')}:{vendor}"
-                left = [r for r in rows if r['vendor'] == vendor]
-                if not left:
-                    conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
-                                 (_now_text(), key))
-                    continue
-                label, n = m.strftime('%B'), len(left)
-                kind = 'pump visit' if vendor == 'Wettech' else 'diver visit'
-                title = (f"{label} maintenance missed: {n} {kind}{'s' if n != 1 else ''} with no {'report' if vendor == 'Wettech' else 'invoice'}"
-                         if over else f"{label} maintenance not done yet: {n} {kind}{'s' if n != 1 else ''}")
-                untold = [r['account'] for r in left if not r['notified']]
-                detail = (f"{who} - no {'service report' if vendor == 'Wettech' else 'Gulfshore invoice'} yet for: "
-                          + ', '.join(r['account'] for r in left[:40]) + (' …' if n > 40 else '') + '.'
-                          + (f" Not told yet: {', '.join(untold[:20])}." if untold else '')
-                          + " It closes by itself as the reports come in - see Maintenance.")
-                add_todo(conn, key, title, detail, {'label': 'Maintenance', 'tab': 'maint'})
-                conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL', (title[:300], detail[:2000], key))
+                # The first version's one list per vendor is replaced by the split lists.
+                conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
+                             (_now_text(), f"maint-check:{ym}:{vendor}"))
+                for freq in ('quarterly', 'monthly'):
+                    key = f"maint-check:{ym}:{vendor}:{freq}"
+                    mine = [r for r in rows if r['vendor'] == vendor and r['frequency'] == freq]
+                    none = [r for r in mine if not r['report'] and not r['billed']]
+                    no_report = [r for r in mine if not r['report'] and r['billed']] if vendor == 'Wettech' else []
+                    if not none and not no_report:
+                        conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
+                                     (_now_text(), key))
+                        continue
+                    kind = 'pump' if vendor == 'Wettech' else 'diver'
+                    head = f"{label} {freq} {kind} maintenance"
+                    title = (f"{head}: {len(none)} no visit found" + (" (missed)" if over and none else '')
+                             if none else f"{head}: {len(no_report)} report{'s' if len(no_report) != 1 else ''} missing")
+                    names = lambda rs: ', '.join(r['account'] for r in rs[:40]) + (' …' if len(rs) > 40 else '')
+                    untold = [r['account'] for r in none if not r['notified']]
+                    detail = ' '.join(x for x in (
+                        f"{who}. No visit found (no bill, no report): {names(none)}." if none else '',
+                        f"Not told yet: {', '.join(untold[:20])}." if untold else '',
+                        f"Visit billed, report missing: {names(no_report)}." if no_report else '',
+                        "Each drops off as its bill or report comes in - see Maintenance.") if x)
+                    add_todo(conn, key, title, detail, {'label': 'Maintenance', 'tab': 'maint'})
+                    conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL',
+                                 (title[:300], detail[:2000], key))
         conn.commit()
     finally:
         conn.close()
