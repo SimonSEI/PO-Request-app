@@ -3734,6 +3734,33 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P._delivery_in('Delivery: 2-3 days'), '', 'a few days is not worth saying')
         self.assertEqual(P._delivery_in('Delivery: 2-3 weeks after receipt of order'), 'It will take 2-3 weeks to deliver after approval.')
 
+    def test_every_accounts_maintenance_is_checked_done(self):
+        """Nov 2 2026 (the office: "make sure that it all gets done"): from the 20th, a to-do per vendor names the
+        month's maintenance visits with no report yet; after the month, the ones still missing are missed. An
+        account drops off once its report is in."""
+        conn = P._conn()
+        try:
+            P.check_maintenance_done(date(2026, 11, 2))
+            missed = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech'").fetchone()
+            self.assertIn('October maintenance missed', missed['title'])
+            self.assertIsNone(conn.execute("SELECT 1 FROM pump_todos WHERE key='maint-check:2026-11:Wettech'").fetchone(),
+                              'this month is only checked from the 20th')
+            name = next(r['account'] for r in P.maint_schedule(conn, date(2026, 10, 1)) if r['vendor'] == 'Wettech')
+            self.assertIn(name, missed['detail'])
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, file_name, created_at) "
+                         "VALUES ('report', 'filed', 'Wettech', ?, '', 'report.pdf', '2026-10-15 10:00:00')", (name,))
+            conn.commit()
+            P.check_maintenance_done(date(2026, 11, 2))
+            detail = conn.execute("SELECT detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech'").fetchone()['detail']
+            self.assertNotIn(name + ',', detail + ',', 'its report is in')
+            P.check_maintenance_done(date(2026, 11, 21))
+            self.assertIn('November maintenance not done yet',
+                          conn.execute("SELECT title FROM pump_todos WHERE key='maint-check:2026-11:Wettech'").fetchone()['title'])
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
