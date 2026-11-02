@@ -568,6 +568,10 @@ function stageText(c){
     if (!ch.last_at) return `Approved · send the quote to ${ch.who || v}`;
     if (!ch.expect_by) return (ch.parts ? `Waiting on ${v} parts (${ch.parts}) · ` : '') + `Waiting on ${ch.who || v}: when it'll be scheduled`;
   }
+  // A service call that needs follow-up work: the quote, the client's OK, then the return visit (Nov 2026, FSW #14657).
+  if (c.flow === 'service_followup' && c.stage === 'vendor_quote') return `Waiting on ${v} quote` + (w ? ' · ' + w : '');
+  if (c.flow === 'service_followup' && c.stage === 'client_quote') return 'Quote received - send to client';
+  if (c.flow === 'service_followup' && c.stage === 'client_approved') return 'Waiting on client to approve quote';
   return ({
     assessment: `Waiting on ${v} to assess` + ((st.assessment || {}).due ? ' · ' + st.assessment.due : '') + (w ? ' · ' + w : ''),
     vendor_quote: `Waiting on quote from ${v}` + (w ? ' · ' + w : ''),
@@ -880,7 +884,9 @@ function jobOnly(c, full){
 }
 function caseTitle(c){ return `<span title="${esc(c.title || '')}">${esc(c.short_title || c.title || c.client_name || 'Item ' + c.id)}</span>`; }
 // The latest status update on a job ("Parts ordered · 2 weeks out · parts due Oct 27").
-function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; return `<span style="font-weight:700" title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${st.on ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for'}[st.kind] || 'on') + ' ' + esc(niceDay(st.on)) : ''} <span class="note">(${esc(niceDay(d10(st.at)))})</span></span>`; }
+function statusLine(c){ const st = c.job_status || {}; if (!st.kind) return ''; const waiting = ['waiting_quote', 'quote_received', 'waiting_approval'].includes(st.kind);
+  const fu = waiting && !st.on && c.chase && c.chase.check_on ? c.chase.check_on : st.on;
+  return `<span style="font-weight:700" title="${esc((st.by || '') + ' ' + (st.at || ''))}">📌 <b>${esc(st.label)}</b>${st.text ? ' - ' + esc(st.text) : ''}${waiting ? ' · since ' + esc(niceDay(d10(st.at))) : ''}${fu ? ' · ' + ({parts_ordered: 'parts due', waiting_vendor: 'expected', scheduled: 'for', waiting_quote: 'follow up', quote_received: 'follow up', waiting_approval: 'follow up'}[st.kind] || 'on') + ' ' + esc(niceDay(fu)) : ''}${waiting ? '' : ` <span class="note">(${esc(niceDay(d10(st.at)))})</span>`}</span>`; }
 function caseSub(c, extra){ return esc([c.client_name, c.site].filter(Boolean).join(' · ')) + (c.po_number ? ' · PO ' + esc(c.po_number) : '') + jobberNo(c) + (extra ? ' · ' + extra : '') + (c.idle_days >= 7 ? ` · <b class="warn">${c.idle_days}d idle</b>` : '') + (statusLine(c) ? '<br>' + statusLine(c) : ''); }
 async function loadToday(){
   const [j, cs] = await Promise.all([api('/summary'), api('/cases?status=open')]);
@@ -951,12 +957,19 @@ async function loadToday(){
   document.getElementById('sideOpen').textContent = `${q.open_count} open jobs`;
   // Waiting on others, by who has the next move (Oct 2026 redesign): one group each, folded unless opened.
   const groups = {}, mine = new Set([...(q.vendor_follow_ups || []), ...q.needs_scheduling, ...q.to_quote_client, ...q.ready_to_close].map(c => c.id));
-  ((cs && cs.cases) || []).forEach(c => { const o = owner(c); if (o && o !== 'You' && !mine.has(c.id)) (groups[o] = groups[o] || []).push(c); });
-  const order = Object.keys(groups).sort((a, b) => (a === 'Client') - (b === 'Client') || groups[b].length - groups[a].length);
+  // The vendor's quote, the client's approval and the vendor's work each get their own group (Nov 2026).
+  const waitKey = (c, o) => o === 'Client' ? (['client_approved', 'client_quote'].includes(c.stage) ? 'Client approval' : 'Client')
+    : o === 'Jordan' ? o : (['vendor_quote', 'assessment'].includes(c.stage) ? o + ' quote' : o + ' work');
+  const label = k => k === 'Client approval' ? 'Waiting on client approval' : k === 'Client' ? 'Waiting on the client'
+    : / quote$/.test(k) ? `Waiting on ${k}` : / work$/.test(k) ? `Waiting on ${k.replace(/ work$/, '')} to do the work` : `Waiting on ${k}`;
+  const ownerOf = {};
+  ((cs && cs.cases) || []).forEach(c => { const o = owner(c); if (o && o !== 'You' && !mine.has(c.id)) { const k = waitKey(c, o); ownerOf[k] = o; (groups[k] = groups[k] || []).push(c); } });
+  const isClient = k => ownerOf[k] === 'Client';
+  const order = Object.keys(groups).sort((a, b) => isClient(a) - isClient(b) || groups[b].length - groups[a].length);
   const fold = (k, title, items) => { let on = false; try { on = localStorage.getItem('pumpsWait:' + k) === '1'; } catch (e) {}
     return `<details ${on ? 'open' : ''} ontoggle="try{localStorage.setItem('pumpsWait:${esc(k)}', this.open ? '1' : '0')}catch(e){}"><summary class="grp"><span class="arr">▸</span> ${title} (${items.length})</summary>${items.join('')}</details>`; };
-  const waitHtml = order.map(o => fold(o, `Waiting on ${esc(o === 'Client' ? 'the client' : o)}`,
-      groups[o].map(c => todoItem(esc(o), o === 'Client' ? 'v' : o === 'Jordan' ? 'g' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c), open(c), '', c.todo_key)))).join('')
+  const waitHtml = order.map(k => { const o = ownerOf[k]; return fold(k, esc(label(k)),
+      groups[k].map(c => todoItem(esc(o), o === 'Client' ? 'v' : o === 'Jordan' ? 'g' : 'a', caseTitle(c), caseSub(c, esc(stageText(c))) + chaseLine(c), open(c), '', c.todo_key))); }).join('')
     + (waiting.length ? fold('reports', 'Waiting on service reports', waiting) : '');
   el.innerHTML = (urgent.length ? '<div class="grp">Now</div>' + urgent.join('') : '')
     + '<div class="grp">To do</div>' + (todo.join('') + q.todos.map(todoRow).join('') || '<div class="empty">Nothing to do. 🎉</div>')
@@ -1057,7 +1070,8 @@ function renderCase(){
       <button class="btn ${['assessment','vendor_quote','scheduled','vendor_bill'].includes(c.stage) ? 'p' : ''}" onclick="vendorEmail(${c.id})">✉️ ${esc(({assessment: 'Ask ' + v + ' to assess', vendor_quote: 'Ask ' + v + ' for the quote', scheduled: 'Ask ' + v + ' to schedule', vendor_bill: 'Ask ' + v + ' for the invoice'})[c.stage] || 'Email ' + v)}</button>
       ${c.chase ? `<button class="btn ${c.chase.state === 'follow_up' ? 'p' : ''}" onclick="logFollow(${c.id})">📞 Log follow-up</button>` : ''}
       ${c.chase && c.chase.parts_wait && !c.chase.last_at ? `<button class="btn" onclick="quoteSent(${c.id})">📤 Approved quote sent to ${esc(c.chase.who || c.vendor || 'the vendor')}</button>` : ''}
-      ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
+      ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) && c.flow !== 'service_followup' ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
+      ${c.status === 'open' && (c.steps || {}).vendor_quote && c.steps.vendor_quote.na && c.flow !== 'service_followup' ? `<button class="btn" title="The service call is done and ${esc(v)} has to quote more work - the job waits on their quote, then the client's approval, then the return visit" onclick="needsQuote(${c.id})">🧾 Needs quote / follow-up work</button>` : ''}
       <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job (service call)'}</option>${J.invoice || c.sei_invoice_number ? `<option value="unlink_invoice">Unlink invoice #${esc((J.invoice || {}).number || c.sei_invoice_number)} (wrong one)</option>` : ''}</select>
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
@@ -1584,7 +1598,7 @@ function stepMenu(k, sel){
 }
 // Status of an approved job: parts ordered (and when they're due), client
 // notified, scheduled, work done… newest on top, every update in the log.
-const JOB_STATUSES = [['parts_ordered', 'Parts ordered'], ['waiting_vendor', 'Waiting on the vendor'], ['client_notified', 'Client notified'], ['scheduled', 'Scheduled'], ['in_progress', 'Work under way'], ['work_done', 'Work done'], ['on_hold', 'On hold'], ['note', 'Note']];
+const JOB_STATUSES = [['parts_ordered', 'Parts ordered'], ['waiting_vendor', 'Waiting on the vendor'], ['client_notified', 'Client notified'], ['scheduled', 'Scheduled'], ['in_progress', 'Work under way'], ['work_done', 'Work done'], ['on_hold', 'On hold'], ['note', 'Note'], ['waiting_quote', 'Waiting on Wettech quote'], ['quote_received', 'Quote received - send to client'], ['waiting_approval', 'Waiting on client to approve quote']];
 function statusSec(c){
   const hist = (c.events || []).filter(e => e.action === 'status');
   return `<details class="sec fold"><summary><h4>Status update</h4>${statusLine(c) ? ` <span class="note">${statusLine(c)}</span>` : ' <span class="note">none yet - add one</span>'}</summary>
@@ -1629,7 +1643,7 @@ function glanceHtml(c){
     <div class="money">${quoteCard}${ourQuoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
     <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
-    <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na || ['vendor_quote', 'client_quote', 'client_approved'].includes(s.key)).map(s => `<option value="${s.key}">${esc(s.label)}${s.na && s.key === 'vendor_quote' ? ' - needs a quote (they go back out)' : ''}</option>`).join('')}</select></div></div>`;
+    <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na || ['vendor_quote', 'client_quote', 'client_approved'].includes(s.key)).map(s => `<option value="${s.key}">${esc(({vendor_quote: 'Waiting on ' + v + ' quote', client_quote: 'Quote received - send to client', client_approved: 'Waiting on client to approve quote'})[s.key] || s.label)}${s.na ? ' (switches on the quote steps)' : ''}</option>`).join('')}</select></div></div>`;
 }
 // The related vendor invoice, from a job: the Vendor invoices tab, searched for its site.
 function findVendorInvoice(name){
@@ -2231,6 +2245,7 @@ function maintEdit(id){
     <label>Date joined<input type="text" id="mt_joined" value="${esc(a.joined)}" placeholder="YYYY-MM-DD"></label>
     <label class="w">Size &amp; make<input type="text" id="mt_equipment" value="${esc(a.equipment)}"></label>
     <label class="w">Location of pump<textarea id="mt_address">${esc(a.address)}</textarea></label>
+    <label>Maintenance done by <span class="note">(only Wettech's visits are told to Justin and checked)</span><input type="text" id="mt_vendor" list="mtVendors" value="${esc(a.vendor || 'Wettech')}"><datalist id="mtVendors"><option value="Wettech"><option value="Naples Electric"><option value="SiteOne"><option value="Oscar (our technician)"></datalist></label>
     <label>Wettech / visit<input type="text" id="mt_vendor_cost" value="${esc(a.vendor_cost)}"></label>
     <label>Naples Electric<input type="text" id="mt_naples_electric" value="${esc(a.naples_electric)}"></label>
     <label>Our bill (Stahlman invoice)<input type="text" id="mt_our_bill" value="${esc(a.our_bill)}"></label>
@@ -2280,7 +2295,7 @@ async function mtPickClient(c){
 }
 async function maintSave(id){
   const v = k => document.getElementById('mt_' + k).value;
-  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, report_only: document.getElementById('mt_report_only').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(','),
+  const body = {name: v('name'), kind: v('kind'), joined: v('joined'), equipment: v('equipment'), address: v('address'), vendor: v('vendor') || 'Wettech', vendor_cost: v('vendor_cost'), naples_electric: v('naples_electric'), our_bill: v('our_bill'), notes: v('notes'), repairs_by: v('repairs_by'), follow_up: v('follow_up'), monthly: document.getElementById('mt_monthly').checked, active: document.getElementById('mt_active').checked, report_only: document.getElementById('mt_report_only').checked, months: [...document.querySelectorAll('.mt_m:checked')].map(x => x.value).join(','),
     ...Object.fromEntries(Object.entries(MTJ).map(([k, v]) => ['jobber_' + k, v || '']))};
   if (id) body.id = id;
   const j = await api('/maint', {method:'POST', body});
@@ -2596,6 +2611,15 @@ function newMenu(){
     <button class="btn" style="justify-content:flex-start;padding:14px;text-align:left" onclick="closeModal();addServiceCall()"><div><b>A service call</b><div class="note">Booked in Jobber - the start of the work, no quote; waits for Wettech to schedule it</div></div></button></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>`);
 }
+// A service call that needs a quote (Florida SouthWestern #14657, Nov 2026): Service call done -> Quote from
+// Wettech -> Quote sent -> Client approved -> Return visit -> ... Ticked steps stay; nothing is sent.
+async function needsQuote(id){
+  const on = prompt('The service call is done and Wettech has to quote the follow-up work.\n\nFollow up with Wettech for the quote on (YYYY-MM-DD) - leave blank for the usual few days:', '');
+  if (on === null) return;
+  const j = await api('/cases/' + id + '/needs_quote', {method:'POST', body:{on: on.trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  curCase = j.case; renderCase(); toast('Waiting on Wettech quote'); loadToday(); if (curTab === 'jobs') loadJobs();
+}
 async function deleteDiveSite(id){ if (!confirm('Remove this site from the diver list?')) return; const j = await api('/dives/sites/' + id + '/delete', {method:'POST', body:{}}); if (j.success) { closeModal(); loadDivers(); } else toast(j.error, true); }
 async function saveDiveSettings(){
   const j = await api('/dives/settings', {method:'POST', body:{to: document.getElementById('dvTo').value, diver_name: document.getElementById('dvName').value, cc: document.getElementById('dvCc').value, from: document.getElementById('dvFrom').value, signature: document.getElementById('dvSig').value, auto: document.getElementById('dvAuto').checked}});
@@ -2779,7 +2803,7 @@ function drawMaintSchedule(){
   const cell = (r, who) => { if (!r) return `<span class="note" title="This account has no ${who === 'Justin' ? 'Wettech pump' : 'Gulfshore lake'} visit this month">— not for ${who}</span>`; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
       : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark told</button>`)
-      + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : 'report not in yet'}</div>`; };
+      + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : r.billed ? '✓ billed ' + esc(niceDay(r.billed)) + ' · report not in' : 'report not in yet'}</div>`; };
   document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
     const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
     return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msTick(this)" ${(w && !w.notified) || (g && !g.notified) ? (MS_SEL.has(a.account) ? 'checked' : '') : 'disabled'}></td>
@@ -2862,7 +2886,7 @@ function renderAccount(){
   const row = (label, val) => val ? `<div class="note"><span style="display:inline-block;min-width:110px">${label}</span> <b style="font-weight:600;color:var(--text)">${esc(val)}</b></div>` : '';
   const card = (title, body, btns) => `<div style="flex:1;min-width:220px;border:1px solid var(--border);border-radius:10px;padding:10px 12px"><div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px"><b>${title}</b><span style="display:flex;gap:4px">${btns}</span></div>${body}</div>`;
   const setup = [
-    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), (p.report_only ? '<div class="note" style="color:var(--amber);font-weight:600;margin-bottom:4px">No separate pump job - billed in the monthly maintenance</div>' : '') + row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes) + (p.jobber_client_id ? row('Jobber', [p.jobber_client_name, p.jobber_property_label, p.jobber_job_label].filter(Boolean).join(' · ')) : `<div class="note warn" style="margin-top:4px">Not linked to Jobber. <button class="btn s" onclick="acEdit('pump', ${p.id})">🔗 Link to Jobber</button></div>`), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
+    p ? card('Pump - Wettech' + (!p.active ? ' <span class="chip">former</span>' : ''), (p.report_only ? '<div class="note" style="color:var(--amber);font-weight:600;margin-bottom:4px">No separate pump job - billed in the monthly maintenance</div>' : '') + row('Type', p.kind) + row('Equipment', p.equipment) + row('Visits', schedText(p) + (p.due_this_month ? ' (due this month)' : '')) + row('Wettech / visit', p.vendor_cost) + row('Naples Electric', p.naples_electric) + row('We bill', p.our_bill) + row('Maintenance by', p.vendor || 'Wettech') + row('Repairs by', p.repairs_by || 'Wettech') + row('Joined', p.joined) + row('Before service', p.follow_up) + row('Notes', p.notes) + (p.jobber_client_id ? row('Jobber', [p.jobber_client_name, p.jobber_property_label, p.jobber_job_label].filter(Boolean).join(' · ')) : `<div class="note warn" style="margin-top:4px">Not linked to Jobber. <button class="btn s" onclick="acEdit('pump', ${p.id})">🔗 Link to Jobber</button></div>`), `<button class="btn s" onclick="acEdit('pump', ${p.id})">Edit</button>`)
       : card('Pump - Wettech', '<div class="note">No pump maintenance.</div>', `<button class="btn s" onclick="acEdit('pump', 0)">＋ Add</button>`),
     l ? card('Lake - Gulfshore' + (l.active === 0 ? ' <span class="chip">former</span>' : ''), row('Equipment', l.equipment) + row('Diver', l.needs_dive ? (l.months ? lakeSched(l) : 'Every month') + (l.status === 'hold' ? ' - on hold' : '') : 'No diving') + row('Gate code', l.gate_code ? l.gate_code + (l.gate_code_from === 'jobber' ? ' (from Jobber)' : '') : '') + row('Gulfshore', l.diver_cost) + row('We bill', l.our_bill) + row('Diver notes', l.diver_notes) + row('Status', l.status_note), `<button class="btn s" onclick="acEdit('lake', ${l.id})">Edit</button>`)
       : card('Lake - Gulfshore', '<div class="note">No lake or diver work.</div>', `<button class="btn s" onclick="acEdit('lake', 0)">＋ Add</button>`),
