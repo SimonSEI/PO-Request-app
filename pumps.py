@@ -5661,14 +5661,17 @@ def _jobber_lines(line_items, what):
     return items
 
 
-_LONG_LEAD = re.compile(r'\b(?:weeks?|wks?|months?)\b', re.I)
+_LONG_LEAD = re.compile(r'\b(?:weeks?|wks?|months?|days?)\b', re.I)
 _DELIVERY = re.compile(r'\b(?:deliver(?:y|ed)?|lead\s*time|ship(?:s|ping|ped)?|arrive|in\s+stock)\b', re.I)
+_LEAD_SPAN = re.compile(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*((?:business\s+|working\s+)?days?|weeks?|wks?|months?)\b', re.I)
 
 
 def delivery_note(doc):
-    """The vendor's delivery time when it is weeks or months away (Lely, Oct
-    2026: "Delivery: 2-3 weeks after receipt of order") - the client is told
-    on our quote: "It will take 2-3 weeks to deliver after approval". A few days isn't worth saying. '' when there is none."""
+    """The vendor's delivery time when it is more than 3 days away (Lely, Oct
+    2026: "Delivery: 2-3 weeks after receipt of order"; Hodges Funeral Home /
+    Lee Memorial, Nov 2026: "Delivery: 7-10 Days after receipt of order") - the
+    client is told on our quote: "It will take 2-3 weeks to deliver after
+    approval". 3 days or less isn't worth saying. '' when there is none."""
     text = doc.get('text_excerpt') or ''
     if not text and doc.get('file_path'):
         try:
@@ -5684,14 +5687,22 @@ def _delivery_in(text):
         line = re.sub(r'\s+', ' ', line).strip()
         if _LONG_LEAD.search(line) and _DELIVERY.search(line) and len(line) <= 200:
             # Said the client's way: from their approval (our order to the vendor).
-            m = re.search(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*(weeks?|wks?|months?)', line, re.I)
+            m = _LEAD_SPAN.search(line)
             if m:
-                unit = {'wk': 'weeks', 'wks': 'weeks'}.get(m.group(2).lower(), m.group(2).lower())
+                unit = re.sub(r'\s+', ' ', m.group(2).lower())
+                unit = {'wk': 'weeks', 'wks': 'weeks'}.get(unit, unit)
+                if 'day' in unit:
+                    most = re.findall(r'\d+', m.group(1))
+                    if not most or int(most[-1]) <= 3:
+                        continue
                 if m.group(1).strip() == '1' and unit.startswith(('week', 'month')):
                     unit = unit.rstrip('s')
+                elif not unit.endswith('s') and m.group(1).strip() != '1':
+                    unit += 's'
                 span = re.sub(r'\s*(?:-|–)\s*', '-', m.group(1).strip())
                 return f'It will take {span} {unit} to deliver after approval.'
-            return line if re.match(r'(?i)delivery\b', line) else f'Delivery: {line}'
+            if not re.search(r'(?i)\bdays?\b', line):
+                return line if re.match(r'(?i)delivery\b', line) else f'Delivery: {line}'
     return ''
 
 

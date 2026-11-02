@@ -2066,6 +2066,12 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(P.parts_lead_in('Delivery: 2-3 weeks after receipt of order'), '2-3 weeks')
         self.assertEqual(P.parts_lead_in('It will take 2-3 weeks to deliver after approval.'), '2-3 weeks')
         self.assertEqual(P.parts_lead_in('Delivery: 3-5 days after receipt of order'), '')
+        # Hodges Funeral Home / Lee Memorial (Nov 2026): days over 3 go on the quote too, but don't hold the job.
+        terms = ('Price includes Sales tax\nTerms: Net 10 days\nDelivery: 7-10 Days after receipt of order\n'
+                 'Prices are good for 30 days.\n')
+        self.assertEqual(P._delivery_in(terms), 'It will take 7-10 days to deliver after approval.')
+        self.assertEqual(P.parts_lead_in(terms), '')
+        self.assertEqual(P._delivery_in('Delivery: 2-3 days after receipt of order\nPrices are good for 30 days.'), '')
         case = {'id': 1, 'status': 'open', 'stage': 'scheduled', 'category': 'repair', 'vendor': 'Wettech',
                 'parts_lead': '2-3 weeks', 'opened_on': '2026-09-20',
                 'steps': {'client_approved': {'at': '2026-10-01'}}}
