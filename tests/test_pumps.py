@@ -3711,6 +3711,172 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_rosewood_quote_auto_links_and_wrong_client_quote_comes_off(self):
+        """Nov 2 2026, Rosewood: our draft #9244 (furnish and install new 7.5HP control box, $1,563) went to ROSEWOOD
+        OF FALLING WATER - the wrong client. #9245, the same quote, went to Rosewood HOA c/o Guardian at 1655 Windy
+        Pines Dr - the client and property of the open service call, Jobber job #14647. #9245 auto-links to that job;
+        #9244 comes off the control box item, which moves to the right client. Then: an archived quote comes off with
+        "pick replacement"; a quote matching several jobs is only suggested, linked with one click."""
+        RH, RHP, FW, FWP = 'C-RHOA', 'P-1655WP', 'C-RFW', 'P-RFW'
+        conn = P._conn()
+        try:
+            ins = ("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, client_name, "
+                   "property_id, property_label, total, created_at, updated_at, web_uri, category, ignored, client_company) "
+                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pump',0,1)")
+            conn.execute(ins, ('J-RW14647', 'job', '14647', 'Lake Level is low Rosewood HOA', 'archived', 'one_off', RH,
+                               'Rosewood HOA c/o Guardian Management Property', RHP, '1655 Windy Pines Drive, Naples',
+                               0, '2026-10-28T14:33:12Z', '2026-11-02T16:48:09Z', 'https://j/work_orders/161453862'))
+            conn.execute(ins, ('Q-RW9244', 'quote', '9244', 'Proposal to furnish and install new 7', 'awaiting_response', '',
+                               FW, 'ROSEWOOD OF FALLING WATER', FWP, 'Falling Waters', 1563, '2026-11-02T16:41:33Z',
+                               '2026-11-02T16:43:54Z', 'https://j/quotes/68259549'))
+            a = P.create_case(conn, {'title': 'Lake Level is low Rosewood HOA', 'client_name': 'Rosewood HOA',
+                                     'vendor': 'Wettech', 'opened_on': '2026-10-28'}, 'test')
+            P.service_call_steps(conn, a, {'number': '14647', 'title': 'Lake Level is low', 'created_at': '2026-10-28'}, 'test')
+            P._link_item(conn, 'J-RW14647', a, 'test')
+            P._set_step(conn, a, 'work_done', at='2026-10-28', by='test')
+            b = P.create_case(conn, {'title': 'Furnish and install new 7.5HP control box', 'client_name': 'ROSEWOOD OF FALLING WATER',
+                                     'vendor': 'Wettech', 'opened_on': '2026-11-02'}, 'test')
+            conn.execute("UPDATE pump_cases SET jobber_client_id=?, jobber_property_id=? WHERE id=?", (FW, FWP, b))
+            P._link_item(conn, 'Q-RW9244', b, 'test')
+            P._set_step(conn, b, 'vendor_quote', at='2026-11-02', by='test')
+            P._set_step(conn, b, 'client_quote', at='2026-11-02', by='test')
+            # The sync brings in #9245.
+            conn.execute(ins, ('Q-RW9245', 'quote', '9245', 'Proposal to furnish and install new 7.5HP control box',
+                               'awaiting_response', '', RH, 'Rosewood HOA c/o Guardian Management Property', RHP,
+                               '1655 Windy Pines Drive, Naples', 1563, '2026-11-02T16:49:06Z', '2026-11-02T16:49:43Z',
+                               'https://j/quotes/68260321'))
+            self.assertIn((a, '9245'), P.auto_link_quotes(conn))
+            self.assertEqual(P.fix_wrong_client_quotes(conn), [(b, '9244', '9245')])
+            conn.commit()
+            # Run again: nothing more to do.
+            self.assertEqual([x for x in P.auto_link_quotes(conn) + P.fix_wrong_client_quotes(conn) if x[0] in (a, b)], [])
+            conn.commit()
+        finally:
+            conn.close()
+        ca, cb = self.case(a), self.case(b)
+        self.assertEqual(ca['jobber']['quote']['number'], '9245')
+        self.assertEqual(ca['jobber']['job']['number'], '14647')
+        self.assertTrue(ca['steps']['client_quote']['at'], 'sent to the client: "Quote sent to client" ticked')
+        self.assertEqual(ca['flow'], 'service_followup', 'the service call now waits on the quote')
+        self.assertEqual(ca['job_status']['kind'], 'waiting_approval')
+        self.assertTrue(any('auto-linked: matched client + property (Rosewood HOA c/o Guardian Management Property + '
+                            '1655 Windy Pines Drive, Naples)' in e['detail'] for e in ca['events']))
+        self.assertNotIn('quote', cb['jobber'])
+        self.assertEqual(cb['jobber']['quote_gone'], {'number': '9244', 'why': 'wrong client', 'at': P._today().isoformat(),
+                                                      'replaced_by': '9245', 'on_case': a})
+        self.assertIn('Rosewood HOA', cb['client_name'])
+        self.assertEqual(cb['jobber']['client']['id'], RH)
+        self.assertTrue(any('went to ROSEWOOD OF FALLING WATER - the wrong client' in e['detail'] for e in cb['events']))
+        conn = P._conn()
+        try:
+            self.assertEqual(tuple(conn.execute("SELECT case_id, ignored, status FROM pump_jobber_items WHERE jobber_id='Q-RW9244'")
+                                   .fetchone()), (None, 1, 'awaiting_response'), 'nothing changed in Jobber')
+            self.assertTrue(conn.execute("SELECT 1 FROM pump_todos WHERE key='archive-quote:Q-RW9244' AND done_at IS NULL").fetchone())
+            # #9245 archived in Jobber: off job A - "Quote archived - pick replacement".
+            conn.execute("UPDATE pump_jobber_items SET status='archived' WHERE jobber_id='Q-RW9245'")
+            P._follow_quotes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+        ca = self.case(a)
+        self.assertNotIn('quote', ca['jobber'])
+        self.assertEqual(ca['jobber']['quote_gone']['why'], 'archived')
+        self.assertTrue(any('was archived in Jobber' in e['detail'] for e in ca['events']))
+        # A new quote at Rosewood HOA now matches both jobs: suggested on each, not linked.
+        conn = P._conn()
+        try:
+            conn.execute(ins, ('Q-RW9250', 'quote', '9250', 'Proposal to furnish and install new 7.5HP control box (rev)',
+                               'awaiting_response', '', RH, 'Rosewood HOA c/o Guardian Management Property', RHP,
+                               '1655 Windy Pines Drive, Naples', 1600, '2026-11-03T10:00:00Z', '2026-11-03T10:00:00Z', ''))
+            self.assertNotIn('9250', [n for _, n in P.auto_link_quotes(conn)])
+            conn.commit()
+        finally:
+            conn.close()
+        for me, other in ((a, b), (b, a)):
+            sug = self.case(me)['quote_suggestions']
+            self.assertEqual([(s['number'], s['others']) for s in sug], [('9250', [other])])
+        r = self.c.post(f'/pumps/api/cases/{a}/link_quote_item', json={'jobber_id': 'Q-RW9250'})
+        self.assertTrue(r.get_json()['success'], r.get_data(as_text=True))
+        ca = self.case(a)
+        self.assertEqual(ca['jobber']['quote']['number'], '9250')
+        self.assertNotIn('quote_gone', ca['jobber'])
+        self.assertEqual(self.case(b)['quote_suggestions'], [])
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?, ?)", (a, b))
+        conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id LIKE 'Q-RW%' OR jobber_id='J-RW14647'")
+        conn.commit()
+        conn.close()
+
+    def test_pump_manager_agent_api(self):
+        """Nov 2026: Pump Manager acts directly with PUMP_MANAGER_WEBHOOK_KEY as a Bearer token. Every action is in
+        the job's history as "Pump Manager" and can be undone; delete, paying bills and email are refused."""
+        saved = P.PUMP_MANAGER_WEBHOOK_KEY
+        P.PUMP_MANAGER_WEBHOOK_KEY = 'pm-key'
+        H = {'Authorization': 'Bearer pm-key'}
+        try:
+            self.assertEqual(self.c.get('/pumps/api/agent/jobs').status_code, 401)
+            self.assertEqual(self.c.get('/pumps/api/agent/jobs', headers={'Authorization': 'Bearer nope'}).status_code, 401)
+            conn = P._conn()
+            try:
+                cid = P.create_case(conn, {'title': 'Agent test pump', 'client_name': 'Agentville HOA', 'vendor': 'Wettech'}, 'test')
+                conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                             "property_id, property_label, total, created_at, category, ignored) VALUES ('Q-AG1', 'quote', "
+                             "'9901', 'Replace pump', 'awaiting_response', 'C-AG', 'Agentville HOA', 'P-AG', '1 Agent Way', "
+                             "500, '2026-11-02T10:00:00Z', 'pump', 1)")
+                conn.commit()
+            finally:
+                conn.close()
+            jobs = self.c.get('/pumps/api/agent/jobs?status=open&q=Agentville', headers=H).get_json()['jobs']
+            self.assertEqual([j['id'] for j in jobs], [cid])
+            self.assertIn('vendor_quote', [s['key'] for s in jobs[0]['steps']])
+            self.assertTrue(self.c.get(f'/pumps/api/agent/jobs/{cid}', headers=H).get_json()['job']['history'] is not None)
+            for path in ('/bills', '/maintenance', '/todos', '/actions'):
+                r = self.c.get('/pumps/api/agent' + path, headers=H)
+                self.assertEqual(r.status_code, 200, path + r.get_data(as_text=True))
+            act = lambda body: self.c.post('/pumps/api/agent/actions', json=body, headers=H)
+            # A note, logged as Pump Manager and undoable.
+            r = act({'type': 'add_note', 'case_id': cid, 'text': 'Called Wettech, quote Friday'})
+            body = r.get_json()
+            self.assertTrue(body['success'], body)
+            self.assertTrue(body['undo_id'])
+            case = self.case(cid)
+            self.assertTrue(any(e['actor'] == 'Pump Manager' and e['action'] == 'Pump Manager action' and 'Called Wettech'
+                                in e['detail'] for e in case['events']))
+            # A step ticked, then undone.
+            body = act({'type': 'set_step', 'case_id': cid, 'step': 'vendor_quote', 'value': '2026-11-02'}).get_json()
+            self.assertTrue(body['success'], body)
+            self.assertEqual(self.case(cid)['steps']['vendor_quote']['at'], '2026-11-02')
+            u = self.c.post('/pumps/api/agent/undo', json={'undo_id': body['undo_id']}, headers=H).get_json()
+            self.assertTrue(u['success'], u)
+            self.assertFalse((self.case(cid)['steps'].get('vendor_quote') or {}).get('at'))
+            # A status, and linking a synced quote by its Jobber #.
+            self.assertTrue(act({'type': 'status', 'case_id': cid, 'kind': 'waiting_vendor', 'text': 'asked'}).get_json()['success'])
+            body = act({'type': 'link_quote', 'case_id': cid, 'number': '9901'}).get_json()
+            self.assertTrue(body['success'], body)
+            self.assertEqual(self.case(cid)['jobber']['quote']['number'], '9901')
+            # Never: unknown/forbidden actions, bad input.
+            for bad in ({'type': 'delete', 'case_id': cid}, {'type': 'mark_paid', 'case_id': cid},
+                        {'type': 'send_email', 'case_id': cid}, {'type': 'set_step', 'case_id': cid, 'step': 'vendor_paid'},
+                        {'type': 'add_note', 'case_id': 999999, 'text': 'x'}):
+                r = act(bad)
+                self.assertEqual(r.status_code, 400, bad)
+                self.assertFalse(r.get_json()['success'])
+            # Someone else's click can't be undone through the agent API.
+            self.c.patch(f'/pumps/api/cases/{cid}', json={'note': 'office note'})
+            conn = P._conn()
+            office = conn.execute("SELECT MAX(id) FROM pump_undo_actions WHERE actor != 'Pump Manager'").fetchone()[0]
+            conn.close()
+            self.assertTrue(office)
+            self.assertEqual(self.c.post('/pumps/api/agent/undo', json={'undo_id': office}, headers=H).status_code, 404)
+            self.assertEqual(self.case(cid)['status'], 'open')
+        finally:
+            P.PUMP_MANAGER_WEBHOOK_KEY = saved
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='Q-AG1'")
+        conn.commit()
+        conn.close()
+
     def test_irrigation_quote_on_a_pump_account_is_not_pump_work(self):
         """Oct 30 2026: Huntington Lakes Master's approved "Controller Replacement - Rain Bird" (#9195) came up to act
         on because it's a pump account. A pump account's quote must itself read as pump work to be followed."""

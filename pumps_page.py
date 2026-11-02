@@ -1581,6 +1581,22 @@ function stepPop(ev, k){
   document.body.appendChild(d);
   setTimeout(() => document.addEventListener('click', function off(e){ if (!d.contains(e.target)) { d.remove(); document.removeEventListener('click', off); } }), 0);
 }
+// A quote taken off the job (archived in Jobber, or sent to the wrong client), and Jobber quotes that match this job
+// and others at the same client + property - one click to link (Nov 2026).
+function quoteMatchHtml(c){
+  const g = (c.jobber || {}).quote_gone, sug = c.quote_suggestions || [];
+  const gone = g && c.status === 'open' ? `<div class="cmp over" style="margin-top:8px">⚠ ${g.why === 'archived' ? `Quote archived - pick replacement <span class="note">(#${esc(g.number)} was archived in Jobber)</span>`
+      : g.why === 'wrong client' ? `Quote #${esc(g.number)} went to the wrong client - taken off${g.replaced_by ? `. Resent as #${esc(g.replaced_by)}` + (g.on_case && g.on_case !== c.id ? ` (on <a href="#case-${g.on_case}" onclick="openCase(${g.on_case});return false">job #${g.on_case}</a>)` : '') : ''}`
+      : `Quote #${esc(g.number)} was moved to another client/property in Jobber - pick replacement`}
+      ${sug.length ? '' : ` <button class="btn s" onclick="linkQuote(${c.id})">🔗 Pick the quote</button>`}</div>` : '';
+  const rows = sug.map(q => `<div class="row" style="cursor:default;align-items:center;margin-top:6px"><div style="flex:1;min-width:0"><b>Suggested match:</b> Jobber quote ${q.uri ? `<a target="_blank" href="${esc(q.uri)}">#${esc(q.number)} ↗</a>` : '#' + esc(q.number)} - ${esc(q.title || '')} ${q.total != null ? '· ' + money(q.total) : ''} · ${esc((q.status || '').replace(/_/g, ' '))}<div class="note">Same client and property as this job and ${q.others.length} other${q.others.length > 1 ? 's' : ''} (${q.others.map(o => '#' + o).join(', ')}) - not linked on its own</div></div><button class="btn s p" onclick="linkSuggested(${c.id}, '${esc(q.jobber_id)}', '${esc(q.number)}')">🔗 Link</button></div>`).join('');
+  return gone + rows;
+}
+async function linkSuggested(id, jid, num){
+  const j = await api('/cases/' + id + '/link_quote_item', {method:'POST', body:{jobber_id: jid}});
+  if (!j.success) { toast(j.error, true); return; }
+  curCase = j.case; renderCase(); toast('Linked quote #' + num); loadToday(); if (curTab === 'jobs') loadJobs();
+}
 function linkMenu(id, sel){ const v = sel.value; sel.value = ''; if (v === 'quote') linkQuote(id); else if (v === 'invoice') linkInvoice(id); else if (v === 'job') linkJob(id); else if (v === 'unlink_invoice') unlinkInvoice(id); }
 // A Jobber invoice linked by mistake taken off the job - nothing changes in Jobber.
 async function unlinkInvoice(id){
@@ -1642,6 +1658,7 @@ function glanceHtml(c){
     ${c.chase ? `<div class="note" style="margin-bottom:8px">${chaseLine(c).replace(/^<br>/, '')}</div>` : ''}
     <div class="money">${quoteCard}${ourQuoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
+    ${quoteMatchHtml(c)}
     <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
     <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na || ['vendor_quote', 'client_quote', 'client_approved'].includes(s.key)).map(s => `<option value="${s.key}">${esc(({vendor_quote: 'Waiting on ' + v + ' quote', client_quote: 'Quote received - send to client', client_approved: 'Waiting on client to approve quote'})[s.key] || s.label)}${s.na ? ' (switches on the quote steps)' : ''}</option>`).join('')}</select></div></div>`;
 }
