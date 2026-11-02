@@ -5662,6 +5662,9 @@ def _jobber_lines(line_items, what):
 
 
 _LONG_LEAD = re.compile(r'\b(?:weeks?|wks?|months?)\b', re.I)
+# Days count too when more than 3 (Lee Memorial well 6, Oct 30 2026: "Delivery: 7-10 Days after receipt of order").
+_LEAD_DAYS = re.compile(r'(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s*(?:business\s+|working\s+)?days?\b', re.I)
+LEAD_DAYS_SAID = 3   # a delivery over this many days goes on our quote
 _DELIVERY = re.compile(r'\b(?:deliver(?:y|ed)?|lead\s*time|ship(?:s|ping|ped)?|arrive|in\s+stock)\b', re.I)
 
 
@@ -5682,6 +5685,10 @@ def delivery_note(doc):
 def _delivery_in(text):
     for line in re.split(r'\n|(?<=\.)\s+', text):
         line = re.sub(r'\s+', ' ', line).strip()
+        d = _LEAD_DAYS.search(line) if _DELIVERY.search(line) and len(line) <= 200 else None
+        if d and int(d.group(2) or d.group(1)) > LEAD_DAYS_SAID and not _LONG_LEAD.search(line):
+            span = f"{d.group(1)}-{d.group(2)}" if d.group(2) else d.group(1)
+            return f'It will take {span} days to deliver after approval.'
         if _LONG_LEAD.search(line) and _DELIVERY.search(line) and len(line) <= 200:
             # Said the client's way: from their approval (our order to the vendor).
             m = re.search(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*(weeks?|wks?|months?)', line, re.I)
@@ -5697,7 +5704,7 @@ def _delivery_in(text):
 
 def parts_lead_in(text):
     """"2-3 weeks" when the text says delivery takes weeks or months, else ''."""
-    m = re.search(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*(weeks?|wks?|months?)', _delivery_in(text or ''), re.I)
+    m = re.search(r'(\d+\s*(?:-|–|to)\s*\d+|\d+|a\s+few|several)\s*(weeks?|wks?|months?|days?)', _delivery_in(text or ''), re.I)
     if not m:
         return ''
     unit = {'wk': 'weeks', 'wks': 'weeks'}.get(m.group(2).lower(), m.group(2).lower())

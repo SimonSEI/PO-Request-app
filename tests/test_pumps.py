@@ -2065,7 +2065,7 @@ class PumpsTest(unittest.TestCase):
         comes up to follow up with Tom 14 days after the approval."""
         self.assertEqual(P.parts_lead_in('Delivery: 2-3 weeks after receipt of order'), '2-3 weeks')
         self.assertEqual(P.parts_lead_in('It will take 2-3 weeks to deliver after approval.'), '2-3 weeks')
-        self.assertEqual(P.parts_lead_in('Delivery: 3-5 days after receipt of order'), '')
+        self.assertEqual(P.parts_lead_in('Delivery: 3-5 days after receipt of order'), '3-5 days')   # over 3 days counts (Oct 30 2026)
         case = {'id': 1, 'status': 'open', 'stage': 'scheduled', 'category': 'repair', 'vendor': 'Wettech',
                 'parts_lead': '2-3 weeks', 'opened_on': '2026-09-20',
                 'steps': {'client_approved': {'at': '2026-10-01'}}}
@@ -3724,6 +3724,16 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_delivery_over_three_days_goes_on_our_quote(self):
+        """Oct 30 2026 (Lee Memorial well 6): "Delivery: 7-10 Days after receipt of order" wasn't on our quote - only
+        weeks or months counted. Over 3 days counts; Net 10 days and "good for 30 days" are not delivery."""
+        text = ('Price includes Sales tax\nTerms: Net 10 days\nDelivery: 7-10 Days after receipt of order\n'
+                'Prices are good for 30 days.\n')
+        self.assertEqual(P._delivery_in(text), 'It will take 7-10 days to deliver after approval.')
+        self.assertEqual(P.parts_lead_in(text), '7-10 days')
+        self.assertEqual(P._delivery_in('Delivery: 2-3 days'), '', 'a few days is not worth saying')
+        self.assertEqual(P._delivery_in('Delivery: 2-3 weeks after receipt of order'), 'It will take 2-3 weeks to deliver after approval.')
+
     def test_follow_up_postponed_to_tomorrow(self):
         """Oct 2026: a follow-up can be put off to the next working day - off the list until then."""
         j = self.c.post('/pumps/api/cases', json={'title': 'Fan', 'client_name': 'Snooze Lakes'}).get_json()
@@ -4405,6 +4415,9 @@ class PumpsTest(unittest.TestCase):
         P.job_invoices = lambda jid: [{'number': '36990', 'subject': 'October Pump Maintenance', 'date': '2026-10-21',
                                        'status': 'awaiting_payment', 'uri': '', 'total': 320, 'client': ''}]
         self.addCleanup(lambda: setattr(P, 'live_recurring_jobs', saved[0]) or setattr(P, 'job_invoices', saved[1]))
+        saved_today = P._today
+        P._today = lambda: date(2026, 10, 29)   # "this month" is October, as when it was written
+        self.addCleanup(setattr, P, '_today', saved_today)
         j = self.c.get('/pumps/api/jobber/invoices?q=Banyan').get_json()
         self.assertTrue(j['success'], j)
         # The live recurring job once, with whether this month is billed on it.
