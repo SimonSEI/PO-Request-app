@@ -15348,6 +15348,10 @@ def _scheduled_hourly():
         scada_due_actions()
     except Exception as e:
         print(f'  ⚠ Pumps: SCADA renewals: {e}')
+    try:
+        check_maintenance_done()
+    except Exception as e:
+        print(f'  ⚠ Pumps: maintenance check: {e}')
     now = _now()
     if now.weekday() < 5 and now.hour >= DIGEST_HOUR:
         try:
@@ -16176,9 +16180,11 @@ def maint_schedule(conn, month_date):
     dive_mail = conn.execute("SELECT sent_at, sent_by, to_addr FROM pump_dive_emails WHERE month=? AND "
                              "COALESCE(error, '')='' ORDER BY id LIMIT 1", (key,)).fetchone()
     visits = [json.loads(r['link'] or '{}') for r in conn.execute("SELECT link FROM pump_todos WHERE kind='visit'")]
+    # A service report for the visit - or, for the diver (who sends no report), Gulfshore's bill for it.
     reports = [dict(r) for r in conn.execute(
-        "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE kind='report' "
-        "AND status != 'dismissed' AND created_at >= ? AND created_at < ?", (key, nxt.isoformat()))]
+        "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE (kind='report' "
+        "OR (kind='bill' AND vendor='Gulfshore')) AND status != 'dismissed' AND created_at >= ? AND created_at < ?",
+        (key, nxt.isoformat()))]
     dive_ids = {s['id'] for s in sites_for_month(conn, month_date)}
     rows = []
     for a in accounts(conn):
@@ -16206,6 +16212,45 @@ def maint_schedule(conn, month_date):
                          'notified': n, 'approved': approved, 'report': report})
     rows.sort(key=lambda r: (bool(r['notified']), r['vendor'], r['account'].lower()))
     return rows
+
+
+MAINT_CHECK_FROM_DAY = 20   # from this day of the month, visits with no report yet are a to-do
+
+
+def check_maintenance_done(today=None):
+    """Every account's monthly or quarterly maintenance done, per the Accounts settings (the office, Nov 2 2026:
+    "just make sure that it all gets done"). From the 20th: a to-do per vendor naming this month's visits with no
+    report yet; after the month: the ones still missing, as missed. Each closes itself when the reports are in."""
+    today = today or _today()
+    first = today.replace(day=1)
+    months = [((first - timedelta(days=1)).replace(day=1), True)]   # last month: anything left was missed
+    if today.day >= MAINT_CHECK_FROM_DAY:
+        months.append((first, False))
+    conn = _conn()
+    try:
+        for m, over in months:
+            rows = [r for r in maint_schedule(conn, m) if not r['report'] and not r['hold']]
+            for vendor, who in (('Wettech', 'Wettech (Justin / Tom)'), ('Gulfshore', 'Jordan (Gulfshore)')):
+                key = f"maint-check:{m.strftime('%Y-%m')}:{vendor}"
+                left = [r for r in rows if r['vendor'] == vendor]
+                if not left:
+                    conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
+                                 (_now_text(), key))
+                    continue
+                label, n = m.strftime('%B'), len(left)
+                kind = 'pump visit' if vendor == 'Wettech' else 'diver visit'
+                title = (f"{label} maintenance missed: {n} {kind}{'s' if n != 1 else ''} with no {'report' if vendor == 'Wettech' else 'invoice'}"
+                         if over else f"{label} maintenance not done yet: {n} {kind}{'s' if n != 1 else ''}")
+                untold = [r['account'] for r in left if not r['notified']]
+                detail = (f"{who} - no {'service report' if vendor == 'Wettech' else 'Gulfshore invoice'} yet for: "
+                          + ', '.join(r['account'] for r in left[:40]) + (' …' if n > 40 else '') + '.'
+                          + (f" Not told yet: {', '.join(untold[:20])}." if untold else '')
+                          + " It closes by itself as the reports come in - see Maintenance.")
+                add_todo(conn, key, title, detail, {'label': 'Maintenance', 'tab': 'maint'})
+                conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL', (title[:300], detail[:2000], key))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _notify_mailto(month_date, rows):
