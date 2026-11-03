@@ -15408,6 +15408,12 @@ def jobs_to_close():
     for c in cases:
         j = json.loads(c['jobber'] or '{}')
         job, inv = j.get('job') or {}, j.get('invoice') or {}
+        if c.get('flow') == 'service_followup' and c['status'] == 'open' and job.get('id') and \
+                (inv.get('status') or '') not in INVOICE_OUT:
+            # A service call that turned into quoted work (the office, Nov 3 2026: "remember to prompt me to close
+            # the service call's job in Jobber"): the visit is done, the follow-up becomes its own job when approved.
+            want[job['id']] = (c, job, None)
+            continue
         if (inv.get('status') or '') not in INVOICE_OUT:
             continue
         if c.get('category') == 'diver' or re.search(r'gulfshore', c.get('vendor') or '', re.I):
@@ -15435,11 +15441,25 @@ def jobs_to_close():
             key = f'close-job:{jid}'
             # The invoice must cover the job: a job worth more than what's invoiced still has work to bill (Ana's
             # Place #14622, Oct 29 2026: the $756.25 bladder tank, with only Gulfshore's $125 invoiced on it).
-            short = bool(it) and _money(n.get('total')) is not None and _money((it[2] or {}).get('total')) is not None \
-                and _money(n.get('total')) > _money(it[2].get('total')) + 0.5
+            short = bool(it) and it[2] is not None and _money(n.get('total')) is not None and \
+                _money((it[2] or {}).get('total')) is not None and _money(n.get('total')) > _money(it[2].get('total')) + 0.5
             if st in JOB_DONE_STATUSES or kind == 'recurring' or not it or short:
                 conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
                              (_now_text(), 'Jobber sync', key))
+            elif it[2] is None:
+                c, job, _ = it
+                q = (json.loads(c['jobber'] or '{}').get('quote') or {}).get('number')
+                total = _money(n.get('total'))
+                add_todo(conn, key, f"Close service call job #{n.get('jobNumber') or job.get('number') or '?'} in Jobber - "
+                                    f"{c.get('client_name') or c.get('title')}",
+                         "The service call is done and the follow-up work is going on "
+                         + (f"quote #{q}" if q else f"{c.get('vendor') or 'Wettech'}'s quote")
+                         + " - once approved it becomes its own job. Close the service call's job so it doesn't sit open."
+                         + (f" It's {'$%s' % format(total, ',.2f')} - invoice the service call first if it's billable."
+                            if total else ''),
+                         {'case_id': c['id'], 'close_job': jid, 'uri': n.get('jobberWebUri') or job.get('uri') or '',
+                          'label': 'Open the job in Jobber'})
+                added.append(jid)
             else:
                 c, job, inv = it
                 add_todo(conn, key, f"Close Jobber job #{n.get('jobNumber') or job.get('number') or '?'} - "

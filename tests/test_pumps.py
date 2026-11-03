@@ -3513,6 +3513,46 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_gql, P.try_mutation = saved
 
+    def test_service_call_turned_quote_prompts_closing_its_jobber_job(self):
+        """Nov 3 2026, the office: "remember to prompt me to close the service call's job in Jobber". A service call
+        whose follow-up work went to a quote gets a Close job to-do while its job is open in Jobber; it goes away once
+        Jobber shows it closed."""
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Pump not running', 'client_name': 'Closecall Lakes', 'vendor': 'Wettech'}, 'test')
+            P.service_call_steps(conn, cid, {'number': '14700', 'title': 'Service call', 'created_at': '2026-10-30'}, 'test')
+            j = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()[0] or '{}')
+            j['job'] = {'id': 'JSC1', 'number': '14700'}
+            j['quote'] = {'id': 'QSC1', 'number': '9260', 'status': 'awaiting_response'}
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), cid))
+            P._set_step(conn, cid, 'work_done', at='2026-10-30', by='test')
+            P.needs_quote_followup(conn, cid, 'test')
+            conn.commit()
+        finally:
+            conn.close()
+        state = {'JSC1': 'REQUIRES_INVOICING'}
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'job': {'jobNumber': '14700' if v['id'] == 'JSC1' else v['id'],
+                                                  'jobStatus': state.get(v['id'], 'ARCHIVED'), 'jobType': 'ONE_OFF',
+                                                  'jobberWebUri': 'u', 'total': 0}}
+        try:
+            P.jobs_to_close()
+            todos = {t['key']: t for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']}
+            t = todos.get('close-job:JSC1')
+            self.assertTrue(t, 'a Close job to-do for the service call')
+            self.assertEqual(t['title'], 'Close service call job #14700 in Jobber - Closecall Lakes')
+            self.assertIn('quote #9260', t['detail'])
+            self.assertEqual(t['link']['close_job'], 'JSC1')
+            state['JSC1'] = 'ARCHIVED'
+            P.jobs_to_close()
+            self.assertNotIn('close-job:JSC1', [t['key'] for t in self.c.get('/pumps/api/summary').get_json()['queue']['todos']])
+        finally:
+            P.jobber_gql = saved
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.commit()
+        conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
