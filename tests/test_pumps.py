@@ -3988,11 +3988,14 @@ class PumpsTest(unittest.TestCase):
             conn.commit()
             P.check_maintenance_done(date(2026, 11, 2))
             q = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
-            missing = q['detail'].split('No visit found (no bill, no report): ')[1].split('.')[0].split(', ')
+            missing = q['detail'].split('No invoice yet: ')[1].split('.')[0].split(', ')
             self.assertEqual(sorted(missing), sorted(unbilled & set(quarterly)))
-            self.assertIn('no visit found (missed)', q['title'])
-            self.assertIn('Visit billed, report missing:', q['detail'])
-            self.assertNotIn('Pebblebrook HOA', q['detail'].split('Visit billed, report missing:')[1], 'its report is in')
+            self.assertIn('pump invoices: 3 not in from Wettech', q['title'])
+            self.assertIn("No invoice can mean the visit wasn't made or there was an issue", q['detail'])
+            self.assertIn('Invoice in, report missing:', q['detail'])
+            self.assertNotIn('Pebblebrook HOA', q['detail'].split('Invoice in, report missing:')[1], 'its report is in')
+            self.assertIn('mailto:', json.loads(conn.execute("SELECT link FROM pump_todos WHERE "
+                                                             "key='maint-check:2026-10:Wettech:quarterly'").fetchone()[0])['mailto'])
             mo = conn.execute("SELECT title, done_at FROM pump_todos WHERE key='maint-check:2026-10:Wettech:monthly'").fetchone()
             self.assertIn('report', mo['title'], 'the monthly sites were billed - only their reports are missing')
             # A site drops off when its bill comes in; with none left, only "report missing" stays.
@@ -4002,7 +4005,7 @@ class PumpsTest(unittest.TestCase):
             conn.commit()
             P.check_maintenance_done(date(2026, 11, 2))
             q = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
-            self.assertNotIn('No visit found', q['detail'])
+            self.assertNotIn('No invoice yet', q['detail'])
             self.assertIn('reports missing', q['title'])
             # This month only from the 20th.
             self.assertIsNone(conn.execute("SELECT 1 FROM pump_todos WHERE key LIKE 'maint-check:2026-11:%'").fetchone())
@@ -4035,7 +4038,7 @@ class PumpsTest(unittest.TestCase):
             conn.commit()
             P.check_maintenance_done()
             t = conn.execute("SELECT title, detail, link FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
-            missing = t['detail'].split('No visit found (no bill, no report): ')[1].split('.')[0].split(', ')
+            missing = t['detail'].split('No invoice yet: ')[1].split('.')[0].split(', ')
             self.assertEqual(sorted(missing), ['FGCU - PGA Program', 'University Square CDD'])
             self.assertIn('FGCU - PGA Program', json.loads(t['link'])['accounts'])
             # A monthly site isn't covered by next month's bill.
@@ -4052,20 +4055,51 @@ class PumpsTest(unittest.TestCase):
             conn = P._conn()
             t = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
             conn.close()
-            self.assertNotIn('No visit found', t['detail'])
+            self.assertNotIn('No invoice yet', t['detail'])
             self.assertNotIn('FGCU', t['detail'])
             # Taken back: on the list again.
             self.c.post('/pumps/api/maint/done', json={'month': '2026-10', 'vendor': 'Wettech',
                                                        'account': 'University Square CDD', 'done': False})
             conn = P._conn()
             t = conn.execute("SELECT detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
-            self.assertIn('No visit found (no bill, no report): University Square CDD.', t['detail'])
+            self.assertIn('No invoice yet: University Square CDD.', t['detail'])
             conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
             conn.execute("DELETE FROM pump_docs WHERE file_name='qbill.pdf'")
             conn.execute("DELETE FROM pump_maint_done")
             conn.commit()
             conn.close()
         finally:
+            P._today = today
+
+    def test_maintenance_check_is_about_invoices(self):
+        """Nov 3 2026, the office: the reminder is "mainly to make sure I get the invoices sent to me" - "the
+        maintenance is always getting done but if the invoice was never sent" the visit may not have been made or
+        there was an issue. A report with no invoice stays on the list; the diver's to-do asks Jordan for his."""
+        today = P._today
+        P._today = lambda: date(2026, 11, 3)
+        conn = P._conn()
+        try:
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            rows = P.maint_schedule(conn, date(2026, 10, 1))
+            wq = [r['account'] for r in rows if r['vendor'] == 'Wettech' and r['frequency'] == 'quarterly' and not r['billed']]
+            site = 'Miromar Outlets'
+            self.assertIn(site, wq)
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, file_name, created_at) "
+                         "VALUES ('report', 'filed', 'Wettech', ?, '', 'inv-report.pdf', '2026-10-16 09:00:00')", (site,))
+            conn.commit()
+            P.check_maintenance_done()
+            t = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
+            self.assertIn(f'{site} (report in)', t['detail'], 'a report is not the invoice')
+            d = conn.execute("SELECT title, detail, link FROM pump_todos WHERE key='maint-check:2026-10:Gulfshore:quarterly'").fetchone()
+            self.assertRegex(d['title'], r'October quarterly diver invoices: \d+ not in from Jordan')
+            link = json.loads(d['link'])
+            self.assertEqual(link['ask'], 'Ask Jordan for the invoices')
+            self.assertIn('October%202026%20maintenance%20invoices', link['mailto'])
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            conn.execute("DELETE FROM pump_docs WHERE file_name='inv-report.pdf'")
+            conn.commit()
+        finally:
+            conn.close()
             P._today = today
 
     def test_riviera_golf_estates_2_not_tracked(self):

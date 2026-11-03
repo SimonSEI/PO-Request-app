@@ -16689,31 +16689,53 @@ def check_maintenance_done(today=None):
                     key = f"maint-check:{ym}:{vendor}:{freq}"
                     mine = [r for r in rows if r['vendor'] == vendor and r['frequency'] == freq]
                     mine = [r for r in mine if not r['done']]   # marked done by hand
-                    none = [r for r in mine if not r['report'] and not r['billed']]
+                    # What's checked is the invoice (the office, Nov 2026: "the maintenance is always getting done
+                    # but if the invoice was never sent" the visit may not have been made, or there was an issue).
+                    # Wettech: its bill, report or not. Gulfshore: Jordan's invoice (he sends no report).
+                    none = [r for r in mine if not r['billed'] and (vendor == 'Wettech' or not r['report'])]
                     no_report = [r for r in mine if not r['report'] and r['billed']] if vendor == 'Wettech' else []
                     if not none and not no_report:
                         conn.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps' WHERE key=? AND done_at IS NULL",
                                      (_now_text(), key))
                         continue
-                    kind = 'pump' if vendor == 'Wettech' else 'diver'
-                    head = f"{label} {freq} {kind} maintenance"
-                    title = (f"{head}: {len(none)} no visit found" + (" (missed)" if over and none else '')
-                             if none else f"{head}: {len(no_report)} report{'s' if len(no_report) != 1 else ''} missing")
                     names = lambda rs: ', '.join(r['account'] for r in rs[:40]) + (' …' if len(rs) > 40 else '')
-                    untold = [r['account'] for r in none if not r['notified']]
-                    detail = ' '.join(x for x in (
-                        f"{who}. No visit found (no bill, no report): {names(none)}." if none else '',
-                        f"Not told yet: {', '.join(untold[:20])}." if untold else '',
-                        f"Visit billed, report missing: {names(no_report)}." if no_report else '',
-                        "Each drops off as its bill or report comes in, or when you mark it done.") if x)
                     link = {'label': 'Maintenance', 'tab': 'maint', 'month': ym, 'vendor': vendor,
                             'accounts': [r['account'] for r in none + no_report][:40]}
+                    diver = vendor == 'Gulfshore'
+                    name = (dive_settings().get('diver_name') or 'Jordan') if diver else 'Wettech'
+                    kind = 'diver' if diver else 'pump'
+                    if none:
+                        title = f"{label} {freq} {kind} invoices: {len(none)} not in from {name}"
+                    else:
+                        title = f"{label} {freq} pump maintenance: {len(no_report)} report{'s' if len(no_report) != 1 else ''} missing"
+                    flag = lambda r: r['account'] + (' (report in)' if not diver and r['report'] else '')
+                    untold = [r['account'] for r in none if not r['notified']]
+                    detail = ' '.join(x for x in (
+                        f"{who}. No invoice yet: {', '.join(flag(r) for r in none[:40])}." if none else '',
+                        "No invoice can mean the visit wasn't made or there was an issue - ask." if none else '',
+                        f"Not told of the visit: {', '.join(untold[:20])}." if untold else '',
+                        f"Invoice in, report missing: {names(no_report)}." if no_report else '',
+                        "Each drops off as its invoice comes in, or when you mark it.") if x)
+                    if none:
+                        link['mailto'] = _invoice_mailto(m, [r['account'] for r in none], name,
+                                                         dive_settings().get('to') if diver else _vendor_email('Wettech'))
+                        link['ask'] = f'Ask {name} for the invoices'
                     add_todo(conn, key, title, detail, link)
                     conn.execute('UPDATE pump_todos SET title=?, detail=?, link=? WHERE key=? AND done_at IS NULL',
                                  (title[:300], detail[:2000], json.dumps(link), key))
         conn.commit()
     finally:
         conn.close()
+
+
+def _invoice_mailto(month_date, sites, name, to):
+    """A ready email asking the vendor or diver for the month's maintenance invoices still not in - it only opens
+    in the office's mail program; nothing is sent from here."""
+    from urllib.parse import quote
+    label = month_date.strftime('%B %Y')
+    body = '\n'.join([f'Hi {name},', '', f"Could you please send your invoices for these {label} maintenance visits? "
+                      "We don't have them yet:", ''] + [f'- {s}' for s in sites] + ['', 'Thank you!'])
+    return f"mailto:{to or ''}?subject={quote(f'{label} maintenance invoices')}&body={quote(body)}"
 
 
 def _notify_mailto(month_date, rows):
