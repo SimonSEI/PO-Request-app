@@ -654,6 +654,7 @@ function todoRow(t){
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">${esc(t.link.label || 'Open in Jobber')} ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.link.close_job ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="closeJobberJob('${esc(t.link.close_job)}', this)">Close job in Jobber</button></div>` : ''}
       ${t.link.tab && !t.link.uri && !t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s" onclick="showTab('${esc(t.link.tab)}')">Open ${esc(t.link.label || t.link.tab)}</button></div>` : ''}
+      ${(t.key || '').startsWith('maint-check:') && (t.link.accounts || []).length ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><span class="note" style="align-self:center">Done already?</span>${t.link.accounts.map(a => `<button class="btn s" title="Mark ${esc(a)}'s visit done - it drops off this list" onclick='maintDone(${JSON.stringify(t.link.month)}, ${JSON.stringify(t.link.vendor)}, ${JSON.stringify(a).replace(/'/g, "&#39;")}, true)'>✓ ${esc(a)}</button>`).join('')}</div>` : ''}
       ${t.link.draft_scada ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="draftScadaQuote(${t.link.scada_id}, this)">Draft quote in Jobber</button></div>` : ''}
       ${(t.key || '').startsWith('gulfshore-unbilled:') && t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" title="Billed already - type our Jobber invoice number" onclick="linkInvoice(${t.link.case_id})">🔗 Link our invoice</button><button class="btn s" title="Billed through a contract - no invoice to link" onclick="billsPayOk([${t.link.case_id}])">OK to pay now</button></div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
@@ -1581,6 +1582,22 @@ function stepPop(ev, k){
   document.body.appendChild(d);
   setTimeout(() => document.addEventListener('click', function off(e){ if (!d.contains(e.target)) { d.remove(); document.removeEventListener('click', off); } }), 0);
 }
+// A quote taken off the job (archived in Jobber, or sent to the wrong client), and Jobber quotes that match this job
+// and others at the same client + property - one click to link (Nov 2026).
+function quoteMatchHtml(c){
+  const g = (c.jobber || {}).quote_gone, sug = c.quote_suggestions || [];
+  const gone = g && c.status === 'open' ? `<div class="cmp over" style="margin-top:8px">⚠ ${g.why === 'archived' ? `Quote archived - pick replacement <span class="note">(#${esc(g.number)} was archived in Jobber)</span>`
+      : g.why === 'wrong client' ? `Quote #${esc(g.number)} went to the wrong client - taken off${g.replaced_by ? `. Resent as #${esc(g.replaced_by)}` + (g.on_case && g.on_case !== c.id ? ` (on <a href="#case-${g.on_case}" onclick="openCase(${g.on_case});return false">job #${g.on_case}</a>)` : '') : ''}`
+      : `Quote #${esc(g.number)} was moved to another client/property in Jobber - pick replacement`}
+      ${sug.length ? '' : ` <button class="btn s" onclick="linkQuote(${c.id})">🔗 Pick the quote</button>`}</div>` : '';
+  const rows = sug.map(q => `<div class="row" style="cursor:default;align-items:center;margin-top:6px"><div style="flex:1;min-width:0"><b>Suggested match:</b> Jobber quote ${q.uri ? `<a target="_blank" href="${esc(q.uri)}">#${esc(q.number)} ↗</a>` : '#' + esc(q.number)} - ${esc(q.title || '')} ${q.total != null ? '· ' + money(q.total) : ''} · ${esc((q.status || '').replace(/_/g, ' '))}<div class="note">Same client and property as this job and ${q.others.length} other${q.others.length > 1 ? 's' : ''} (${q.others.map(o => '#' + o).join(', ')}) - not linked on its own</div></div><button class="btn s p" onclick="linkSuggested(${c.id}, '${esc(q.jobber_id)}', '${esc(q.number)}')">🔗 Link</button></div>`).join('');
+  return gone + rows;
+}
+async function linkSuggested(id, jid, num){
+  const j = await api('/cases/' + id + '/link_quote_item', {method:'POST', body:{jobber_id: jid}});
+  if (!j.success) { toast(j.error, true); return; }
+  curCase = j.case; renderCase(); toast('Linked quote #' + num); loadToday(); if (curTab === 'jobs') loadJobs();
+}
 function linkMenu(id, sel){ const v = sel.value; sel.value = ''; if (v === 'quote') linkQuote(id); else if (v === 'invoice') linkInvoice(id); else if (v === 'job') linkJob(id); else if (v === 'unlink_invoice') unlinkInvoice(id); }
 // A Jobber invoice linked by mistake taken off the job - nothing changes in Jobber.
 async function unlinkInvoice(id){
@@ -1642,6 +1659,7 @@ function glanceHtml(c){
     ${c.chase ? `<div class="note" style="margin-bottom:8px">${chaseLine(c).replace(/^<br>/, '')}</div>` : ''}
     <div class="money">${quoteCard}${ourQuoteCard}${billCard}${card('Our invoice', ourInv, invSub)}${`<div class="m"><div class="k">${esc(v)} paid?</div>${vendorPayHtml(c)}</div>`}</div>
     ${cmpText ? `<div class="cmp ${esc(cmp.state)}">${cmpText}</div>` : ''}
+    ${quoteMatchHtml(c)}
     <div style="margin-top:10px">${journeyHtml(c, 'track')}</div>
     <div class="note" style="margin-top:4px">Click a step to tick it, untick it or mark it not needed · <select class="s" onchange="moveCase(this)" title="Out of step? Bring the job up to where it really is - the steps before are ticked done today." style="padding:2px 4px;font-size:12px"><option value="">Move to…</option>${c.step_list.filter(s => !s.na || ['vendor_quote', 'client_quote', 'client_approved'].includes(s.key)).map(s => `<option value="${s.key}">${esc(({vendor_quote: 'Waiting on ' + v + ' quote', client_quote: 'Quote received - send to client', client_approved: 'Waiting on client to approve quote'})[s.key] || s.label)}${s.na ? ' (switches on the quote steps)' : ''}</option>`).join('')}</select></div></div>`;
 }
@@ -2803,7 +2821,9 @@ function drawMaintSchedule(){
   const cell = (r, who) => { if (!r) return `<span class="note" title="This account has no ${who === 'Justin' ? 'Wettech pump' : 'Gulfshore lake'} visit this month">— not for ${who}</span>`; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
       : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark told</button>`)
-      + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : r.billed ? '✓ billed ' + esc(niceDay(r.billed)) + ' · report not in' : 'report not in yet'}</div>`; };
+      + `<div class="note">${r.done ? `<span class="ok">✓ done</span> (marked ${esc(niceDay(d10(r.done.done_at)))}${r.done.done_by ? ' by ' + esc(r.done.done_by) : ''}) <button class="btn s" title="Not done after all" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, false)'>↺</button>`
+        : (r.report ? '✓ report ' + esc(niceDay(r.report)) : r.billed ? '✓ billed ' + esc(niceDay(r.billed)) + ' · report not in' : 'report not in yet')
+          + (!r.report ? ` <button class="btn s" title="The visit was made - take it off the maintenance check" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, true)'>✓ Done</button>` : '')}</div>`; };
   document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
     const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
     return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msTick(this)" ${(w && !w.notified) || (g && !g.notified) ? (MS_SEL.has(a.account) ? 'checked' : '') : 'disabled'}></td>
@@ -2847,6 +2867,14 @@ function maintNotifiedAsk(account, vendor){
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
     <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tom said the week of the 20th"></label></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotified(${JSON.stringify(account).replace(/"/g, '&quot;')}, '${vendor}', true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)">Save</button>`);
+}
+// A visit the office knows was made (Nov 2026: "both of these are done for this quarter"): off the maintenance check.
+async function maintDone(month, vendor, account, on){
+  const j = await api('/maint/done', {method:'POST', body:{month, vendor, account, done: on}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(on ? `${account}: done` : `${account}: not done`);
+  if (typeof MS !== 'undefined' && MS && MS.month === j.month) { MS = j; drawMaintSchedule(); }
+  loadToday();
 }
 async function maintNotified(account, vendor, on, how, note){
   const accounts = Array.isArray(account) ? account : [account];

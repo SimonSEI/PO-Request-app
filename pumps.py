@@ -491,7 +491,7 @@ def _conn():
 # scan, the Jobber sync and other background work are never recorded.
 UNDO_TABLES = ('pump_cases', 'pump_docs', 'pump_issues', 'pump_events', 'pump_scada', 'pump_client_contacts',
                'pump_jobber_items', 'pump_site_aliases', 'pump_todos', 'pump_dive_sites', 'pump_scada_accounts',
-               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices')
+               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices', 'pump_maint_done')
 _UNDO_ACTION = contextvars.ContextVar('pump_undo_action', default=0)
 
 
@@ -1591,6 +1591,7 @@ def case_detail(conn, case_id):
     d['jobber_items'] = [dict(r) for r in conn.execute(
         'SELECT * FROM pump_jobber_items WHERE case_id=? ORDER BY updated_at DESC', (case_id,))]
     d['schedule_email'] = _schedule_mailto(d)
+    d['quote_suggestions'] = quote_suggestions(conn, d)
     d['account'] = account_info(conn, d)
     add_account_names(conn, [d])
     return d
@@ -4374,7 +4375,15 @@ def _sync_jobber(full=False, actor='system'):
         conn = _conn()
         try:
             now = _now_text()
+            # Linked quotes whose client or property was changed in Jobber (Nov 2026).
+            moved = []
             for it in seen.values():
+                if it['kind'] == 'quote':
+                    was = conn.execute('SELECT client_id, property_id, case_id FROM pump_jobber_items WHERE jobber_id=?',
+                                       (it['jobber_id'],)).fetchone()
+                    if was and was['case_id'] and was['client_id'] and it['client_id'] and \
+                            (was['client_id'], was['property_id'] or '') != (it['client_id'], it['property_id'] or ''):
+                        moved.append(it['jobber_id'])
                 conn.execute('''INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type,
                                   client_id, client_name, property_id, property_label, total, created_at, updated_at,
                                   start_at, completed_at, approved_at, web_uri, category, po_number, synced_at,
@@ -4393,7 +4402,10 @@ def _sync_jobber(full=False, actor='system'):
                               it['total'], it['created_at'], it['updated_at'], it['start_at'], it['completed_at'],
                               it['approved_at'], it['web_uri'], it['category'], it['po_number'], now,
                               it['client_company']))
+            for jid in moved:
+                quote_moved(conn, jid)
             linked = _link_jobber_items(conn)
+            fix_wrong_client_quotes(conn)
             status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
@@ -4622,7 +4634,8 @@ def _link_jobber_items(conn):
     open_cases = [dict(r) for r in conn.execute(
         "SELECT id, jobber, jobber_client_id, jobber_property_id, opened_on FROM pump_cases "
         "WHERE status='open' AND jobber_client_id != '' AND jobber_property_id != ''")]
-    for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind IN ('quote','job') AND case_id IS NULL "
+    # (Quotes: auto_link_quotes, which also replaces a wrong or archived one - Nov 2026.)
+    for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='job' AND case_id IS NULL "
                            "AND ignored=0 AND client_id != '' AND property_id != ''").fetchall():
         hits = [c for c in open_cases if c['jobber_client_id'] == it['client_id']
                 and c['jobber_property_id'] == it['property_id']
@@ -4633,7 +4646,236 @@ def _link_jobber_items(conn):
         _link_item(conn, it['jobber_id'], hits[0]['id'], 'jobber sync')
         hits[0]['jobber'] = json.dumps({**json.loads(hits[0]['jobber'] or '{}'), it['kind']: {'id': it['jobber_id']}})
         linked += 1
-    return linked
+    return linked + len(auto_link_quotes(conn))
+
+
+# Quote statuses a job can follow; an archived quote is replaced (Nov 2026).
+LIVE_QUOTE = ('draft', 'awaiting_response', 'changes_requested', 'approved')
+
+
+def _case_homes(conn, c, j=None):
+    """The Jobber (client, property) pairs a job is at: its own, and its Jobber job's and request's."""
+    j = j if j is not None else json.loads(c['jobber'] or '{}')
+    homes = set()
+    if c['jobber_client_id'] and c['jobber_property_id']:
+        homes.add((c['jobber_client_id'], c['jobber_property_id']))
+    for k in ('job', 'request'):
+        rid = (j.get(k) or {}).get('id')
+        r = rid and conn.execute('SELECT client_id, property_id FROM pump_jobber_items WHERE jobber_id=?', (rid,)).fetchone()
+        if r and r['client_id'] and r['property_id']:
+            homes.add((r['client_id'], r['property_id']))
+    return homes
+
+
+def _quote_replaceable(conn, qid, it):
+    """Whether a job's linked quote (qid) gives way to the new one (it): it was archived, or made for another client."""
+    old = conn.execute('SELECT status, client_id FROM pump_jobber_items WHERE jobber_id=?', (qid,)).fetchone()
+    if not old:
+        return False
+    return old['status'] == 'archived' or bool(old['client_id'] and it['client_id'] and old['client_id'] != it['client_id'])
+
+
+def _quote_is_ours(it):
+    """A quote that may go on a pump job: not irrigation work, not one of Beatriz's sites."""
+    if it.get('category') not in ('pump', 'diver', 'filter', 'scada') and _irrigation_title(it.get('title')):
+        return False
+    return not beatrice_site(it.get('client_name'), it.get('property_label'), it.get('title'))
+
+
+def quote_candidates(conn, it, cases=None):
+    """The open jobs a Jobber quote could be for (Nov 2026): at the same Jobber client AND property, opened on or
+    before the quote was made, the work not billed yet, and with no quote of their own - or one that was archived
+    or made for another client."""
+    it = dict(it)
+    if not (it.get('client_id') and it.get('property_id')) or not _quote_is_ours(it):
+        return []
+    rows = cases if cases is not None else conn.execute("SELECT * FROM pump_cases WHERE status='open'").fetchall()
+    out = []
+    for c in rows:
+        j = json.loads(c['jobber'] or '{}')
+        if (it['client_id'], it['property_id']) not in _case_homes(conn, c, j):
+            continue
+        if (it.get('created_at') or '')[:10] < (c['opened_on'] or c['created_at'] or '')[:10]:
+            continue
+        steps = json.loads(c['steps'] or '{}')
+        if any((steps.get(k) or {}).get('at') for k in ('vendor_bill', 'invoice_drafted')):
+            continue   # its work is billed: a new quote is new work
+        q = (j.get('quote') or {}).get('id')
+        if q == it['jobber_id'] or (q and not _quote_replaceable(conn, q, it)):
+            continue
+        out.append(dict(c))
+    return out
+
+
+def _quote_steps_forward(conn, case_id, it, actor):
+    """A quote now on a job moves its steps on: a draft means the vendor's quote is in ("Send our quote to the
+    client"); sent means "Quote sent to client" too. A service call becomes Service call done -> Quote -> ..."""
+    row = conn.execute('SELECT steps, flow FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    steps = json.loads(row['steps'] or '{}')
+    if (steps.get('vendor_quote') or {}).get('na') or (steps.get('client_quote') or {}).get('na'):
+        needs_quote_followup(conn, case_id, actor)
+        row = conn.execute('SELECT steps, flow FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        steps = json.loads(row['steps'] or '{}')
+    made = (it.get('created_at') or '')[:10] or _today().isoformat()
+    if not (steps.get('vendor_quote') or {}).get('at'):
+        _set_step(conn, case_id, 'vendor_quote', at=made, by=actor)
+    sent = it['status'] in QUOTE_GONE_OUT
+    if sent and not (steps.get('client_quote') or {}).get('at'):
+        _set_step(conn, case_id, 'client_quote', at=(it.get('updated_at') or '')[:10] or made, by=actor)
+    if row['flow'] == 'service_followup' and it['status'] in ('draft', 'awaiting_response', 'changes_requested'):
+        set_job_status(conn, case_id, actor, 'waiting_approval' if sent else 'quote_received', f"#{it['number']}")
+
+
+def link_quote_to_case(conn, it, case_id, actor, reason):
+    """Put a Jobber quote on a job, taking off the one it replaces (archived, or for another client), move the
+    steps on and log why. Returns the old quote's number when one was replaced."""
+    it = dict(it)
+    j = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()[0] or '{}')
+    old = j.get('quote') or {}
+    replaced = old.get('number') if old.get('id') and old['id'] != it['jobber_id'] else None
+    if old.get('id') and old['id'] != it['jobber_id']:
+        conn.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=? AND case_id=?', (old['id'], case_id))
+    _link_item(conn, it['jobber_id'], case_id, actor)
+    conn.execute("UPDATE pump_cases SET jobber_property_id=COALESCE(NULLIF(jobber_property_id, ''), ?) WHERE id=?",
+                 (it.get('property_id') or '', case_id))
+    _quote_steps_forward(conn, case_id, it, actor)
+    _event(conn, actor, 'quote linked', f"Jobber quote #{it['number']} \"{it.get('title') or ''}\" "
+                                        f"({(it.get('status') or '').replace('_', ' ')}) - {reason}"
+           + (f". Relinked from #{replaced} to #{it['number']}" if replaced else ''), case_id=case_id)
+    return replaced
+
+
+def _where(it):
+    it = dict(it)
+    return f"{it.get('client_name') or 'client'} + {it.get('property_label') or 'property'}"
+
+
+def auto_link_quotes(conn, actor='Jobber sync'):
+    """New Jobber quotes (and ones whose client or property changed) go on the open job they are for, when exactly
+    one job matches the client AND property (Rosewood #9245 -> job #14647, Nov 2026). Several matches: shown on
+    each as a suggested match, nothing linked. Returns [(case_id, quote number)] linked."""
+    done = []
+    cases = conn.execute("SELECT * FROM pump_cases WHERE status='open'").fetchall()
+    rows = conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND case_id IS NULL AND ignored=0 "
+                        f"AND status IN ({','.join('?' * len(LIVE_QUOTE))}) AND client_id != '' AND property_id != '' "
+                        "ORDER BY created_at, number", LIVE_QUOTE).fetchall()
+    for it in rows:
+        hits = quote_candidates(conn, it, cases)
+        if len(hits) != 1:
+            continue
+        link_quote_to_case(conn, it, hits[0]['id'], actor, f"auto-linked: matched client + property ({_where(it)})")
+        done.append((hits[0]['id'], it['number']))
+        cases = conn.execute("SELECT * FROM pump_cases WHERE status='open'").fetchall()
+    return done
+
+
+def quote_moved(conn, jid, actor='Jobber sync'):
+    """A linked quote whose client or property was changed in Jobber: it goes to the one other open job at its new
+    client and property; otherwise it stays, and the job follows it to the new client and property."""
+    it = conn.execute('SELECT * FROM pump_jobber_items WHERE jobber_id=?', (jid,)).fetchone()
+    if not it or not it['case_id'] or it['status'] not in LIVE_QUOTE:
+        return None
+    c = conn.execute("SELECT * FROM pump_cases WHERE id=? AND status='open'", (it['case_id'],)).fetchone()
+    if not c or (it['client_id'], it['property_id']) in _case_homes(conn, c):
+        return None
+    others = [x for x in quote_candidates(conn, it) if x['id'] != c['id']]
+    if len(others) == 1:
+        j = json.loads(c['jobber'] or '{}')
+        j.pop('quote', None)
+        j['quote_gone'] = {'number': it['number'], 'why': 'moved', 'at': _today().isoformat(),
+                           'replaced_by': '', 'on_case': others[0]['id']}
+        conn.execute('UPDATE pump_cases SET jobber=?, updated_at=? WHERE id=?', (json.dumps(j), _now_text(), c['id']))
+        conn.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=?', (jid,))
+        _event(conn, actor, 'quote unlinked', f"Jobber quote #{it['number']} was moved to {_where(dict(it))} in "
+                                              f"Jobber - it's for job #{others[0]['id']} now", case_id=c['id'])
+        link_quote_to_case(conn, it, others[0]['id'], actor,
+                           f"auto-linked: its client/property changed in Jobber and matches this job ({_where(dict(it))})")
+        return others[0]['id']
+    conn.execute("UPDATE pump_cases SET jobber_client_id=?, jobber_property_id=?, updated_at=? WHERE id=?",
+                 (it['client_id'], it['property_id'], _now_text(), c['id']))
+    _event(conn, actor, 'client changed', f"Jobber quote #{it['number']} was moved to {_where(dict(it))} in Jobber "
+                                          f"- this job follows it", case_id=c['id'])
+    return c['id']
+
+
+def fix_wrong_client_quotes(conn, actor='Jobber sync'):
+    """A quote sent to the wrong client and resent to the right one (Rosewood, Nov 2026: our draft #9244 went to
+    ROSEWOOD OF FALLING WATER; #9245, the same quote and price, went to Rosewood HOA c/o Guardian 8 minutes
+    later). The job holding the wrong one lets it go and moves to the right client and property; it takes the
+    new quote if no job has it yet. The wrong quote can't be archived from here: that's a to-do.
+    Returns [(case_id, old number, new number)]."""
+    done = []
+    for c in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND jobber LIKE '%quote%'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        qid = (j.get('quote') or {}).get('id')
+        old = qid and conn.execute('SELECT * FROM pump_jobber_items WHERE jobber_id=?', (qid,)).fetchone()
+        if not old or old['status'] not in LIVE_QUOTE or old['total'] is None or not old['client_id']:
+            continue
+        made = old['created_at'] or ''
+        later = (datetime.strptime(made[:10], '%Y-%m-%d') + timedelta(days=14)).strftime('%Y-%m-%d') if made else ''
+        theirs = _match_words(old['client_name'] or '')
+        hits = []
+        for n in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND jobber_id != ? AND total=? "
+                              "AND client_id != '' AND client_id != ? AND created_at > ? AND substr(created_at, 1, 10) <= ? "
+                              f"AND status IN ({','.join('?' * len(LIVE_QUOTE))})",
+                              (qid, old['total'], old['client_id'], made, later, *LIVE_QUOTE)).fetchall():
+            a, b = (old['title'] or '').strip().lower(), (n['title'] or '').strip().lower()
+            same_work = len(min(a, b, key=len)) >= 12 and (a.startswith(b) or b.startswith(a) or similarity(a, b) >= 0.9)
+            if same_work and theirs & _match_words(n['client_name'] or ''):
+                hits.append(n)
+        if len(hits) != 1:
+            continue
+        n = hits[0]
+        name = match_account(n['client_name'], conn)
+        name = name if name and similarity(n['client_name'], name) >= 0.85 else n['client_name']
+        j.pop('quote', None)
+        j['client'] = {'id': n['client_id'], 'name': n['client_name']}
+        j['quote_gone'] = {'number': old['number'], 'why': 'wrong client', 'at': _today().isoformat(),
+                           'replaced_by': n['number'], 'on_case': n['case_id'] or c['id']}
+        conn.execute("UPDATE pump_cases SET jobber=?, client_name=?, jobber_client_id=?, jobber_property_id=?, "
+                     "updated_at=? WHERE id=?", (json.dumps(j), name, n['client_id'], n['property_id'] or '',
+                                                 _now_text(), c['id']))
+        conn.execute('UPDATE pump_jobber_items SET case_id=NULL, ignored=1 WHERE jobber_id=?', (qid,))
+        _event(conn, actor, 'client corrected',
+               f"Jobber quote #{old['number']} went to {old['client_name']} - the wrong client. The same quote went "
+               f"to {n['client_name']} as #{n['number']}: this job moved to {_where(dict(n))}", case_id=c['id'])
+        if not n['case_id']:
+            link_quote_to_case(conn, n, c['id'], actor, f"the same quote resent to the right client "
+                                                        f"(matched client + property: {_where(dict(n))})")
+            j = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (c['id'],)).fetchone()[0] or '{}')
+            j.pop('quote_gone', None)
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(j), c['id']))
+        else:
+            _event(conn, actor, 'quote unlinked', f"Quote #{old['number']} taken off. Its replacement #{n['number']} "
+                                                  f"is on job #{n['case_id']}", case_id=c['id'])
+        add_todo(conn, f"archive-quote:{qid}", f"Archive quote #{old['number']} in Jobber - it went to the wrong client",
+                 f"#{old['number']} went to {old['client_name']}; the right quote is #{n['number']} "
+                 f"({n['client_name']}). Nothing was changed in Jobber.", {'case_id': c['id'], 'uri': old['web_uri'] or ''})
+        done.append((c['id'], old['number'], n['number']))
+    return done
+
+
+def quote_suggestions(conn, case):
+    """Unlinked Jobber quotes that match this open job and at least one other (client + property): suggested,
+    one click to link (Nov 2026)."""
+    if case.get('status') != 'open':
+        return []
+    row = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case['id'],)).fetchone()
+    homes = _case_homes(conn, row)
+    if not homes:
+        return []
+    out = []
+    for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND case_id IS NULL AND ignored=0 "
+                           f"AND status IN ({','.join('?' * len(LIVE_QUOTE))}) ORDER BY created_at DESC",
+                           LIVE_QUOTE).fetchall():
+        if (it['client_id'], it['property_id']) not in homes:
+            continue
+        hits = quote_candidates(conn, it)
+        if len(hits) > 1 and any(h['id'] == case['id'] for h in hits):
+            out.append({'jobber_id': it['jobber_id'], 'number': it['number'], 'title': it['title'],
+                        'status': it['status'], 'total': it['total'], 'uri': it['web_uri'],
+                        'others': [h['id'] for h in hits if h['id'] != case['id']]})
+    return out
 
 
 def _with_invoice_link(conn, c):
@@ -4882,6 +5124,16 @@ def _follow_quotes(conn):
         it = conn.execute('SELECT status, updated_at, total FROM pump_jobber_items WHERE jobber_id=?',
                           (q['id'],)).fetchone()
         if not it:
+            continue
+        if it['status'] == 'archived' and c['status'] == 'open':
+            # Archived in Jobber: off the job, which shows "Quote archived - pick replacement" (Nov 2026).
+            j.pop('quote', None)
+            j['quote_gone'] = {'number': q.get('number') or '', 'why': 'archived', 'at': _today().isoformat(),
+                               'replaced_by': '', 'on_case': None}
+            conn.execute('UPDATE pump_cases SET jobber=?, updated_at=? WHERE id=?', (json.dumps(j), _now_text(), c['id']))
+            conn.execute('UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id=? AND case_id=?', (q['id'], c['id']))
+            _event(conn, 'jobber sync', 'quote unlinked', f"Jobber quote #{q.get('number')} was archived in Jobber - "
+                                                          f"taken off this job. Pick its replacement", case_id=c['id'])
             continue
         if it['total'] is not None and it['total'] != q.get('total'):
             q['total'] = it['total']
@@ -6221,6 +6473,7 @@ def link_jobber_quote(case_id, number, actor='system'):
         num = str(q.get('quoteNumber'))
         j['quote'] = {'id': q['id'], 'number': num, 'uri': q.get('jobberWebUri'),
                       'status': status, 'total': _money((q.get('amounts') or {}).get('total'))}
+        j.pop('quote_gone', None)
         if client.get('id'):
             j['client'] = {'id': client['id'], 'name': client.get('name', '')}
         conn.execute("UPDATE pump_cases SET jobber=?, jobber_client_id=COALESCE(NULLIF(?, ''), jobber_client_id), "
@@ -8249,6 +8502,10 @@ def _register_routes(app, csrf):
         # Bearer-token calls carry no browser cookie, so no CSRF token either.
         # (The office door keeps CSRF; the bot door ignores the session.)
         csrf.exempt(bot_view)
+    for path, methods, fn in AGENT_ROUTES:
+        view = _agent_view(fn)
+        bp.add_url_rule(f'/pumps/api/agent{path}', view.__name__, view, methods=list(methods))
+        csrf.exempt(view)
     bp.add_url_rule('/pumps/api/assistant/reply', 'assistant_reply', assistant_reply, methods=['POST'])
     csrf.exempt(assistant_reply)
     bp.add_url_rule('/pumps/api/assistant/match-reply', 'pm_match_reply', pm_match_reply, methods=['POST'])
@@ -10167,6 +10424,24 @@ def h_case_status_kind(actor, case_id):
         conn.close()
 
 
+@api('/cases/<int:case_id>/link_quote_item', methods=('POST',))
+def h_case_link_quote_item(actor, case_id):
+    """Link a suggested Jobber quote (already synced) to this job - nothing changes in Jobber."""
+    conn = _conn()
+    try:
+        it = conn.execute("SELECT * FROM pump_jobber_items WHERE jobber_id=? AND kind='quote'",
+                          (str(_json().get('jobber_id') or ''),)).fetchone()
+        if not it or not conn.execute("SELECT 1 FROM pump_cases WHERE id=?", (case_id,)).fetchone():
+            return {'success': False, 'error': 'Not found'}, 404
+        if it['case_id'] and it['case_id'] != case_id:
+            return {'success': False, 'error': f"Quote #{it['number']} is on job #{it['case_id']}"}, 409
+        link_quote_to_case(conn, it, case_id, actor, f"linked from the suggested match (client + property: {_where(dict(it))})")
+        conn.commit()
+        return {'case': case_detail(conn, case_id)}
+    finally:
+        conn.close()
+
+
 @api('/cases/<int:case_id>/needs_quote', methods=('POST',))
 def h_case_needs_quote(actor, case_id):
     """A service call that needs a quote / follow-up work: switch its steps and wait on Wettech's quote."""
@@ -10995,6 +11270,8 @@ def _link_item(conn, jobber_id, case_id, actor):
     j = json.loads(row['jobber'] or '{}')
     j[it['kind']] = {'id': it['jobber_id'], 'number': it['number'], 'uri': it['web_uri'], 'status': it['status'],
                      'total': it['total']}
+    if it['kind'] == 'quote':
+        j.pop('quote_gone', None)   # its replacement is picked
     if it['client_id']:
         j.setdefault('client', {'id': it['client_id'], 'name': it['client_name']})
     conn.execute("UPDATE pump_cases SET jobber=?, jobber_client_id=COALESCE(NULLIF(jobber_client_id, ''), ?), "
@@ -12469,7 +12746,7 @@ SEED_LAKES = [
     ('Pebblebrook HOA', 'Both', '2023-11-17', '4 Pump Stations 9 Lake Fountains', None, Q, '$275.00', '$3,850 for both', '',
      None, 1, 1),
     ('Riviera Golf Estates 2', 'Lake', '2022-01-01', '1 Lake 1 Filter', '351 Charlemagne Blvd, Naples', '4,10', '$125.00',
-     '$200.00', '', 'April and October.', 1, 1),
+     '$200.00', '', 'April and October.', 1, 0),   # not tracked any more (Nov 2026)
     ('Rosewood HOA', 'Lake', '2026-07-13', '1 Lake', None, Q, '$125.00', '$687.50', '', None, 1, 1),
     ('Sanctuary @ Blue Heron', 'Lake', '2016-01-01', '3 Lakes 9 Filters 3 Pump Stations', None, Q, '$225.00', '$490.00', '',
      None, 1, 1),
@@ -12709,6 +12986,22 @@ def _apply_maint_vendors(c, now):
         return
     for name, v in (('Warm Springs Comm. Assoc.', 'Naples Electric'), ('Hodges Funeral Home', 'SiteOne')):
         c.execute('UPDATE pump_maint_accounts SET vendor=? WHERE name=?', (v, name))
+
+
+FORMER_ACCOUNTS_NOV26 = ('Riviera Golf Estates 2', 'Riviera Golf Estates #2')
+
+
+def _apply_former_nov26(c, now):
+    """Once (Nov 3 2026, the office): "We are not tracking RIVIERA GOLF ESTATES #2 anymore" - a former account:
+    off the diver list, the maintenance check and Jobber's auto-tracking. Its jobs and history stay."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('former_nov26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    ph = ','.join('?' * len(FORMER_ACCOUNTS_NOV26))
+    c.execute(f"UPDATE pump_dive_sites SET active=0, updated_by='Office (Nov 3 2026)', updated_at=? "
+              f"WHERE name COLLATE NOCASE IN ({ph})", (now, *FORMER_ACCOUNTS_NOV26))
+    c.execute(f"UPDATE pump_maint_accounts SET active=0, updated_by='Office (Nov 3 2026)', updated_at=? "
+              f"WHERE name COLLATE NOCASE IN ({ph})", (now, *FORMER_ACCOUNTS_NOV26))
 
 
 def _apply_wild_blue_oct28(c, now):
@@ -13093,6 +13386,17 @@ def init_account_tables(c):
                   updated_at TEXT)''')
     # Whether the subcontractor (Wettech, Gulfshore) has been told about an
     # account's maintenance in a month - one row per account, vendor and month.
+    # A maintenance visit the office marks done by hand ("both of these are done for this quarter", Nov 2026):
+    # it counts as made whatever bill or report is in.
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_done (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  month TEXT NOT NULL,
+                  account TEXT NOT NULL,
+                  vendor TEXT NOT NULL,
+                  note TEXT DEFAULT '',
+                  done_by TEXT DEFAULT '',
+                  done_at TEXT,
+                  UNIQUE(month, account, vendor))''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_notices (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   month TEXT NOT NULL,
@@ -13184,6 +13488,7 @@ def init_account_tables(c):
     _bill_checked_when_invoiced(c, now)
     _drop_irrigation_quote_items(c, now)
     _apply_maint_vendors(c, now)
+    _apply_former_nov26(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
@@ -16302,15 +16607,22 @@ def maint_schedule(conn, month_date):
     dive_mail = conn.execute("SELECT sent_at, sent_by, to_addr FROM pump_dive_emails WHERE month=? AND "
                              "COALESCE(error, '')='' ORDER BY id LIMIT 1", (key,)).fetchone()
     visits = [json.loads(r['link'] or '{}') for r in conn.execute("SELECT link FROM pump_todos WHERE kind='visit'")]
+    done_by_hand = {(r['account'], r['vendor']): dict(r) for r in
+                    conn.execute('SELECT * FROM pump_maint_done WHERE month=?', (key,))}
+    # A quarterly visit made a month early or late is still the quarter's (FGCU PGA, University Square, Nov 2026):
+    # its bill or report counts from the month before to the month after.
+    prev = (month_date.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
+    after = (nxt + timedelta(days=32)).replace(day=1).isoformat()
     # A service report for the visit - or, for the diver (who sends no report), Gulfshore's bill for it.
     reports = [dict(r) for r in conn.execute(
         "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE (kind='report' "
         "OR (kind='bill' AND vendor='Gulfshore')) AND status != 'dismissed' AND created_at >= ? AND created_at < ?",
-        (key, nxt.isoformat()))]
+        (prev, after))]
     bills = [dict(r) for r in conn.execute(
         "SELECT vendor, client_name, site, COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) AS date FROM pump_docs "
         "WHERE kind='bill' AND status != 'dismissed' AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) >= ? "
-        "AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) < ?", (key + '-01', nxt.isoformat()))]
+        "AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) < ?", (prev, after))]
+    in_month = lambda d: key <= (d or '')[:7] < nxt.isoformat()[:7]
     dive_ids = {s['id'] for s in sites_for_month(conn, month_date)}
     rows = []
     for a in accounts(conn):
@@ -16334,15 +16646,17 @@ def maint_schedule(conn, month_date):
             approved = next((v.get('since') for v in visits if vendor in (v.get('vendors') or [])
                              and key <= (v.get('since') or '') < nxt.isoformat()
                              and _is_account(names, v.get('account'))), '')
-            report = next((r['created_at'][:10] for r in reports if r['vendor'] == vendor and (
+            window = (lambda d: True) if freq == 'quarterly' else in_month
+            report = next((r['created_at'][:10] for r in reports if r['vendor'] == vendor and window(r['created_at']) and (
                 _is_account(names, r['client_name']) or any(site_name_matches(x, r['client_name']) for x in names) or
                 fuzzy_has(_core_name(a['name']), f"{r['site']} {r['file_name']}"))), '')
             # A bill from the vendor for the site dated in the month is the visit made, report or not (Nov 2026).
-            billed = next((b['date'] for b in bills if b['vendor'] == vendor and (
+            billed = next((b['date'] for b in bills if b['vendor'] == vendor and window(b['date']) and (
                 _is_account(names, b['client_name']) or any(site_name_matches(x, b['client_name']) or
                                                             site_name_matches(x, b['site']) for x in names))), '')
             rows.append({'account': a['name'], 'vendor': vendor, 'what': what, 'where': where, 'hold': hold,
-                         'notified': n, 'approved': approved, 'report': report, 'billed': billed, 'frequency': freq})
+                         'notified': n, 'approved': approved, 'report': report, 'billed': billed, 'frequency': freq,
+                         'done': done_by_hand.get((a['name'], vendor))})
     rows.sort(key=lambda r: (bool(r['notified']), r['vendor'], r['account'].lower()))
     return rows
 
@@ -16374,6 +16688,7 @@ def check_maintenance_done(today=None):
                 for freq in ('quarterly', 'monthly'):
                     key = f"maint-check:{ym}:{vendor}:{freq}"
                     mine = [r for r in rows if r['vendor'] == vendor and r['frequency'] == freq]
+                    mine = [r for r in mine if not r['done']]   # marked done by hand
                     none = [r for r in mine if not r['report'] and not r['billed']]
                     no_report = [r for r in mine if not r['report'] and r['billed']] if vendor == 'Wettech' else []
                     if not none and not no_report:
@@ -16390,10 +16705,12 @@ def check_maintenance_done(today=None):
                         f"{who}. No visit found (no bill, no report): {names(none)}." if none else '',
                         f"Not told yet: {', '.join(untold[:20])}." if untold else '',
                         f"Visit billed, report missing: {names(no_report)}." if no_report else '',
-                        "Each drops off as its bill or report comes in - see Maintenance.") if x)
-                    add_todo(conn, key, title, detail, {'label': 'Maintenance', 'tab': 'maint'})
-                    conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL',
-                                 (title[:300], detail[:2000], key))
+                        "Each drops off as its bill or report comes in, or when you mark it done.") if x)
+                    link = {'label': 'Maintenance', 'tab': 'maint', 'month': ym, 'vendor': vendor,
+                            'accounts': [r['account'] for r in none + no_report][:40]}
+                    add_todo(conn, key, title, detail, link)
+                    conn.execute('UPDATE pump_todos SET title=?, detail=?, link=? WHERE key=? AND done_at IS NULL',
+                                 (title[:300], detail[:2000], json.dumps(link), key))
         conn.commit()
     finally:
         conn.close()
@@ -16427,6 +16744,35 @@ def h_maint_schedule(actor):
     conn = _conn()
     try:
         return _schedule_payload(conn, _month_arg(request.args.get('month')))
+    finally:
+        conn.close()
+
+
+@api('/maint/done', methods=('POST',))
+def h_maint_done(actor):
+    """{"month": "YYYY-MM", "vendor", "account", "done": true|false, "note"}: a visit done (or not) by the office's
+    word - it drops off the maintenance check."""
+    d = _json()
+    month_date = _month_arg(d.get('month'))
+    vendor, name = str(d.get('vendor') or '').strip(), str(d.get('account') or '').strip()
+    if vendor not in ('Wettech', 'Gulfshore') or not name:
+        raise ValueError('Which account and subcontractor?')
+    key, on = month_date.strftime('%Y-%m'), d.get('done', True) not in (False, 0, '0', 'false')
+    conn = _conn()
+    try:
+        if on:
+            conn.execute('INSERT OR REPLACE INTO pump_maint_done (month, account, vendor, note, done_by, done_at) '
+                         'VALUES (?,?,?,?,?,?)', (key, name, vendor, str(d.get('note') or '')[:500], actor or '', _now_text()))
+        else:
+            conn.execute('DELETE FROM pump_maint_done WHERE month=? AND account=? AND vendor=?', (key, name, vendor))
+        _event(conn, actor, f"{month_date.strftime('%B')} maintenance {'done' if on else 'not done'}", f'{name} ({vendor})')
+        conn.commit()
+    finally:
+        conn.close()
+    check_maintenance_done()   # the to-do drops the site (or closes)
+    conn = _conn()
+    try:
+        return _schedule_payload(conn, month_date)
     finally:
         conn.close()
 
@@ -16622,7 +16968,7 @@ PM_REPLY_FORMAT = (
     'a button the user clicks - nothing happens until they do), "suggestions": ["an idea to improve how the '
     'app or the workflow works", ...] (optional, at most 5)}')
 PM_STATUS_KINDS = ('parts_ordered', 'waiting_vendor', 'client_notified', 'scheduled', 'in_progress', 'work_done',
-                   'on_hold', 'note')
+                   'on_hold', 'note', 'waiting_quote', 'quote_received', 'waiting_approval')
 
 
 def pm_action(conn, a):
@@ -16769,6 +17115,281 @@ def assistant_reply():
     if not cur.rowcount:
         return jsonify({'success': False, 'error': 'No such message'}), 404
     return jsonify({'success': True})
+
+
+# ── Pump Manager agent API (Nov 2026) ─────────────────────────────────────────
+# Pump Manager acts directly, with PUMP_MANAGER_WEBHOOK_KEY as a Bearer token: it reads jobs, bills,
+# maintenance and to-dos, and does the same actions the Ask panel offers (plus add_note, set_step, link_quote).
+# Each action runs through the app's own route as "Pump Manager", is logged in the job's history and goes on
+# the Undo list. Never: delete, marking bills paid, sending email - and Jobber is still only changed by a
+# person's click (those routes refuse anyone else).
+PM_AGENT = 'Pump Manager'
+PM_AGENT_ACTIONS = {
+    **PM_ACTIONS,
+    'link': ('Link a Jobber quote, invoice or job, or a vendor bill, to an item',
+             {'case_id': 'the item', 'kind': 'quote | invoice | job | bill', 'number': 'its Jobber # (bill: the vendor invoice #)'}),
+    'add_note': ("Add a note to an item's history", {'case_id': 'the item', 'text': 'the note'}),
+    'set_step': ('Tick, untick or mark not needed one step of an item',
+                 {'case_id': 'the item', 'step': ' | '.join(STEP_KEYS), 'value': 'YYYY-MM-DD (done that day) | "" (not done) | "na" (not needed)'}),
+    'link_quote': ('Link a synced Jobber quote to an item (replaces an archived or wrong-client one)',
+                   {'case_id': 'the item', 'number': 'the Jobber quote #'}),
+}
+# Never through the agent API, whatever the action turns into.
+_AGENT_NEVER = re.compile(r'/(delete|paid|pay_ok|unpaid|hold|send|[a-z_]*email)(/|$)|/bills_to_pay|/undo', re.I)
+
+
+def agent_action(conn, a):
+    """An agent action -> {label, method, path, body}, or ValueError saying why it can't be."""
+    if not isinstance(a, dict):
+        raise ValueError('Not an action')
+    t = str(a.get('type') or '')
+    if t not in PM_AGENT_ACTIONS:
+        raise ValueError(f'Unknown action "{t[:40]}" - one of: {", ".join(PM_AGENT_ACTIONS)}')
+    num = str(a.get('number') or '').strip().lstrip('#')
+    cid = str(a.get('case_id') or '').strip()
+    row = conn.execute('SELECT id, title, client_name FROM pump_cases WHERE id=?', (int(cid),)).fetchone() \
+        if cid.isdigit() else None
+    name = (row['title'] or row['client_name'] or f"item {row['id']}") if row else ''
+    if t in ('add_note', 'set_step', 'link_quote') or (t == 'link' and str(a.get('kind') or '').lower() == 'bill'):
+        if not row:
+            raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
+    if t == 'add_note':
+        text = str(a.get('text') or a.get('note') or '').strip()[:1000]
+        if not text:
+            raise ValueError('Write the note')
+        return {'label': f'Note on {name}: {text[:80]}', 'method': 'POST', 'path': f"/cases/{row['id']}", 'body': {'note': text}}
+    if t == 'set_step':
+        k, v = str(a.get('step') or ''), a.get('value', a.get('at', ''))
+        if k not in STEP_KEYS:
+            raise ValueError(f'Unknown step "{k[:30]}"')
+        v = 'na' if str(v).lower() == 'na' else ('' if v in (None, '', False) else (_iso_date(str(v)) or ''))
+        if a.get('value') not in (None, '', False) and str(a.get('value')).lower() != 'na' and not v:
+            raise ValueError('value is a date (YYYY-MM-DD), "" or "na"')
+        what = 'not needed' if v == 'na' else ('done ' + v if v else 'not done')
+        return {'label': f'{dict(STEPS)[k].format(vendor="vendor")} on {name}: {what}', 'method': 'POST',
+                'path': f"/cases/{row['id']}", 'body': {'steps': {k: v}}}
+    if t == 'link_quote':
+        if not num:
+            raise ValueError('Which Jobber quote #?')
+        it = conn.execute("SELECT jobber_id FROM pump_jobber_items WHERE kind='quote' AND number=?", (num,)).fetchone()
+        if it:
+            return {'label': f'Link Jobber quote #{num} to {name}', 'method': 'POST',
+                    'path': f"/cases/{row['id']}/link_quote_item", 'body': {'jobber_id': it['jobber_id']}}
+        return {'label': f'Link Jobber quote #{num} to {name}', 'method': 'POST',
+                'path': f"/cases/{row['id']}/jobber_quote", 'body': {'number': num}}
+    if t == 'link' and str(a.get('kind') or '').lower() == 'bill':
+        if not num:
+            raise ValueError('Which vendor bill #?')
+        d = conn.execute("SELECT id FROM pump_docs WHERE kind='bill' AND status != 'dismissed' AND doc_number=? "
+                         "ORDER BY id DESC", (num,)).fetchall()
+        if len(d) != 1:
+            raise ValueError(f'No vendor bill #{num} here' if not d else f'{len(d)} vendor bills are #{num} - say which job')
+        return {'label': f'Put vendor bill #{num} on {name}', 'method': 'POST', 'path': f"/docs/{d[0]['id']}/refile",
+                'body': {'case_id': row['id']}}
+    return pm_action(conn, {**a, 'type': t})
+
+
+_AGENT_MAP = []
+
+
+def _agent_route(method, path):
+    """The app's own handler for a route path (the same one the office's click runs)."""
+    from werkzeug.routing import Map, Rule
+    if not _AGENT_MAP:
+        _AGENT_MAP.append(Map([Rule(p, endpoint=i, methods=list(m)) for i, (p, m, _) in enumerate(_ROUTES)]))
+    ep, kw = _AGENT_MAP[0].bind('localhost').match(path, method=method)
+    return _ROUTES[ep][2], kw
+
+
+def run_agent_action(a):
+    """Do one action as Pump Manager: through the app's own route, recorded for Undo, logged on the job.
+    Returns (body, http code); body has undo_id when something changed."""
+    from flask import current_app
+    conn = _conn()
+    try:
+        r = agent_action(conn, a)
+    finally:
+        conn.close()
+    if _AGENT_NEVER.search(r['path']):
+        raise ValueError('Pump Manager may not delete, mark bills paid or send email')
+    fn, kw = _agent_route(r['method'], r['path'])
+    with current_app.test_request_context('/api/pumps' + r['path'], method=r['method'], json=r.get('body') or {}):
+        action = _start_undo(PM_AGENT)
+        token = _UNDO_ACTION.set(action)
+        try:
+            try:
+                out = fn(PM_AGENT, **kw)
+            except (ValueError, KeyError) as e:
+                out = ({'success': False, 'error': str(e)}, 400)
+            except JobberError as e:
+                out = ({'success': False, 'error': str(e)}, 502)
+            body, code = out if isinstance(out, tuple) else (out, 200)
+            body = body.get_json() if isinstance(body, Response) else dict(body or {})
+            ok = code < 400 and body.get('success', True)
+            case_id = (a.get('case_id') if str(a.get('case_id') or '').isdigit() else None) or body.get('case_id') or \
+                (body.get('case') or {}).get('id')
+            if ok and case_id:
+                c2 = _conn()
+                try:
+                    _event(c2, PM_AGENT, 'Pump Manager action', r['label'], case_id=int(case_id))
+                    c2.commit()
+                finally:
+                    c2.close()
+        finally:
+            _UNDO_ACTION.reset(token)
+            if action:
+                _finish_undo(action)
+    c2 = _conn()
+    try:
+        kept = action and c2.execute('SELECT 1 FROM pump_undo_actions WHERE id=?', (action,)).fetchone()
+    finally:
+        c2.close()
+    body.pop('case', None)
+    return {'success': bool(ok), 'action': r['label'], 'case_id': case_id, 'undo_id': action if kept else None,
+            **({'error': body.get('error')} if not ok else {}),
+            **{k: v for k, v in body.items() if k not in ('success', 'error')}}, (code if not ok else 200)
+
+
+def _agent_ok():
+    return bool(PUMP_MANAGER_WEBHOOK_KEY) and hmac.compare_digest(request.headers.get('Authorization', ''),
+                                                                   f'Bearer {PUMP_MANAGER_WEBHOOK_KEY}')
+
+
+def _agent_view(fn):
+    def view(**kw):
+        if not _agent_ok():
+            return jsonify({'success': False, 'error': 'Unauthorized'}), 401
+        try:
+            out = fn(**kw)
+        except ValueError as e:
+            return jsonify({'success': False, 'error': str(e)}), 400
+        body, code = out if isinstance(out, tuple) else (out, 200)
+        return jsonify({'success': code < 400, **body} if 'success' not in body else body), code
+    view.__name__ = f'agent_{fn.__name__}'
+    return view
+
+
+def _agent_todos(conn):
+    by_case = {}
+    rows = [_todo_dict(r) for r in conn.execute("SELECT * FROM pump_todos WHERE done_at IS NULL "
+                                                "ORDER BY COALESCE(NULLIF(due_on, ''), created_at), id")]
+    for t in rows:
+        cid = (t.get('link') or {}).get('case_id') if isinstance(t.get('link'), dict) else None
+        if cid:
+            by_case.setdefault(int(cid), []).append(t)
+    return rows, by_case
+
+
+def _agent_job(conn, c, todos):
+    J = c.get('jobber') or {}
+    items = [dict(r) for r in conn.execute('SELECT kind, number, title, status, total, client_name, property_label, '
+                                           'web_uri FROM pump_jobber_items WHERE case_id=? ORDER BY kind, number', (c['id'],))]
+    prop = next((i['property_label'] for i in items if i.get('property_label')), '')
+    bills = [{'doc_id': r['id'], 'number': r['doc_number'], 'date': r['doc_date'], 'vendor': r['vendor'],
+              'subtotal': r['subtotal'], 'total': r['total']}
+             for r in conn.execute("SELECT id, doc_number, doc_date, vendor, subtotal, total FROM pump_docs "
+                                   "WHERE case_id=? AND kind='bill' AND status != 'dismissed' ORDER BY id", (c['id'],))]
+    return {'id': c['id'], 'title': c.get('title'), 'client_name': c.get('client_name'),
+            'account_name': c.get('account_name'), 'site': c.get('site'), 'vendor': c.get('vendor'),
+            'status': c.get('status'), 'stage': c.get('stage'), 'urgent': bool(c.get('urgent')),
+            'job_status': c.get('job_status') or None, 'flow': c.get('flow') or '',
+            'jobber_client': J.get('client') or ({'id': c.get('jobber_client_id')} if c.get('jobber_client_id') else None),
+            'property': {'id': c.get('jobber_property_id') or '', 'label': prop},
+            'jobber_job_number': (J.get('job') or {}).get('number'),
+            'quote': J.get('quote'), 'invoice': J.get('invoice'), 'request': J.get('request'),
+            'quote_gone': J.get('quote_gone'), 'jobber_items': items, 'vendor_bills': bills,
+            'vendor_paid_on': c.get('vendor_paid_on') or '', 'po_number': c.get('po_number') or '',
+            'steps': [{'key': s['key'], 'label': s['label'], 'at': s.get('at') or '', 'na': bool(s.get('na'))}
+                      for s in c.get('step_list') or []],
+            'todos': [{'id': t['id'], 'title': t['title'], 'due_on': t.get('due_on') or ''} for t in todos.get(c['id'], [])]}
+
+
+def agent_jobs():
+    st = request.args.get('status', 'open')
+    if st not in ('open', 'all'):
+        raise ValueError('status is open or all')
+    conn = _conn()
+    try:
+        cases = list_cases(conn, st, None, request.args.get('q', '').strip())
+        add_account_names(conn, cases)
+        _, todos = _agent_todos(conn)
+        return {'jobs': [_agent_job(conn, c, todos) for c in cases]}
+    finally:
+        conn.close()
+
+
+def agent_job(case_id):
+    conn = _conn()
+    try:
+        d = case_detail(conn, case_id)
+        if not d:
+            return {'success': False, 'error': 'Not found'}, 404
+        _, todos = _agent_todos(conn)
+        return {'job': {**_agent_job(conn, d, todos), 'description': d.get('description') or '',
+                        'quote_suggestions': d.get('quote_suggestions') or [],
+                        'history': [{k: e.get(k) for k in ('at', 'actor', 'action', 'detail') if k in e}
+                                    for e in d.get('events') or []][:50]}}
+    finally:
+        conn.close()
+
+
+def agent_bills():
+    conn = _conn()
+    try:
+        return {'to_pay': bills_to_pay(conn), 'paid_recently': bills_paid_recently(conn)}
+    finally:
+        conn.close()
+
+
+def agent_maintenance():
+    conn = _conn()
+    try:
+        return _schedule_payload(conn, _month_arg(request.args.get('month')))
+    finally:
+        conn.close()
+
+
+def agent_todos():
+    conn = _conn()
+    try:
+        return {'todos': _agent_todos(conn)[0]}
+    finally:
+        conn.close()
+
+
+def agent_actions():
+    """POST {type, case_id, ...}: one action, done now. GET: the action types and their params."""
+    if request.method == 'GET':
+        return {'actions': {k: {'does': v[0], 'params': v[1]} for k, v in PM_AGENT_ACTIONS.items()},
+                'never': 'delete, marking bills paid, sending email; Jobber changes need a person\'s click'}
+    return run_agent_action(request.get_json(silent=True) or {})
+
+
+def agent_undo():
+    """POST {"undo_id"}: take back one of Pump Manager's own actions."""
+    aid = (request.get_json(silent=True) or {}).get('undo_id')
+    conn = _conn()
+    try:
+        a = conn.execute('SELECT actor FROM pump_undo_actions WHERE id=?', (int(aid) if str(aid).isdigit() else 0,)).fetchone()
+    finally:
+        conn.close()
+    if not a or a['actor'] != PM_AGENT:
+        return {'success': False, 'error': "Not one of Pump Manager's actions"}, 404
+    try:
+        return {'undone': undo_action(int(aid), PM_AGENT)}
+    except UndoBlocked as e:
+        return {'success': False, 'error': str(e)}, 409
+
+
+AGENT_ROUTES = (
+    ('/jobs', ('GET',), agent_jobs),
+    ('/jobs/<int:case_id>', ('GET',), agent_job),
+    ('/bills', ('GET',), agent_bills),
+    ('/maintenance', ('GET',), agent_maintenance),
+    ('/todos', ('GET',), agent_todos),
+    ('/actions', ('GET', 'POST'), agent_actions),
+    ('/undo', ('POST',), agent_undo),
+)
 
 
 # ── Pump Manager: matching a vendor invoice to its Jobber job, invoice or quote ──

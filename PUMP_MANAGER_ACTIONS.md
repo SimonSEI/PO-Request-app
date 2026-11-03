@@ -51,3 +51,45 @@ The app checks each action when the answer arrives. An unknown type, a missing i
 number that isn't synced shows as "can't", with the reason. The app builds the route itself; it is
 never taken from Pump Manager's answer. Deleting, marking bills paid, and sending emails are not
 offered.
+
+## Agent API: Pump Manager acting directly (Nov 2026)
+
+Pump Manager can also read and act without a click. Every call carries
+`Authorization: Bearer <PUMP_MANAGER_WEBHOOK_KEY>`, the same key the app sends with questions. Without that
+key, or with a wrong one, the call gets a 401.
+
+### Read
+
+| GET | returns |
+|---|---|
+| `/pumps/api/agent/jobs?status=open\|all&q=` | Jobs with client, Jobber client and property, Jobber job #, linked quote/invoice/request, synced Jobber items, vendor bills, steps, status, to-dos |
+| `/pumps/api/agent/jobs/<id>` | One job, plus its description, suggested quote matches and the last 50 history entries |
+| `/pumps/api/agent/bills` | Vendor bills to pay and bills paid lately (read only) |
+| `/pumps/api/agent/maintenance?month=YYYY-MM` | This month's maintenance visits and who has been told |
+| `/pumps/api/agent/todos` | Open to-dos |
+| `/pumps/api/agent/actions` | The action types and their params |
+
+### Act
+
+`POST /pumps/api/agent/actions` with `{"type": ..., "case_id": ..., ...}`. It takes the Ask panel's types
+(above) and these:
+
+| type | params | does |
+|---|---|---|
+| `link` | `case_id`, `kind` (quote, invoice, job or **bill**), `number` | Links a Jobber record by its #, or puts a vendor bill (by vendor invoice #) on the job |
+| `add_note` | `case_id`, `text` | Adds a note to the job's history |
+| `set_step` | `case_id`, `step`, `value` (`YYYY-MM-DD` done that day, `""` not done, `"na"` not needed) | Ticks, unticks or skips one step |
+| `link_quote` | `case_id`, `number` | Links a synced Jobber quote, replacing an archived or wrong-client one |
+
+`status` also takes `waiting_quote`, `quote_received` and `waiting_approval`.
+
+The answer is `{"success", "action", "case_id", "undo_id"}`, or `{"success": false, "error"}` with a 400.
+
+- Each action runs through the app's own route, the same one an office click uses, as the user **"Pump Manager"**.
+  It is logged in the job's history as "Pump Manager action: <what>".
+- Each action goes on the Undo list (24 hours), labelled with Pump Manager's name. Office users can undo it there.
+  Pump Manager can undo its own actions with `POST /pumps/api/agent/undo {"undo_id"}`, but not anyone else's.
+- **Never allowed:** deleting, marking bills paid (or unpaid, or on hold), and sending email. These are refused
+  even if an action would lead to one of those routes.
+- Jobber is still only changed by a person's click. Routes that write to Jobber (drafting a quote or an
+  invoice, adding a Jobber note) refuse Pump Manager the same way they refuse the mailbox scan.
