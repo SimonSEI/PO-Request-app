@@ -2751,7 +2751,7 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('<b>Anna&#x27;s Place</b>' if '&#x27;' in p['html'] else "<b>Anna's Place</b>", p['html'])
         october = self.c.get('/pumps/api/dives/preview?month=2026-10-01').get_json()['text']
         self.assertIn('Morton Grove', october)
-        self.assertIn('Riviera Golf Estates 2', october)
+        self.assertNotIn('Riviera Golf Estates 2', october)   # not tracked since Nov 3 2026
 
         # Sending: once a month, from the PO mailbox, copied to Andrea, Word list attached.
         sent = []
@@ -4067,6 +4067,22 @@ class PumpsTest(unittest.TestCase):
             conn.close()
         finally:
             P._today = today
+
+    def test_riviera_golf_estates_2_not_tracked(self):
+        """Nov 3 2026, the office: "We are not tracking RIVIERA GOLF ESTATES #2 anymore" - a former account, off the
+        diver list and maintenance check and not auto-tracked from Jobber."""
+        conn = P._conn()
+        try:
+            rows = {r['name']: r['active'] for r in conn.execute(
+                "SELECT name, active FROM pump_dive_sites WHERE name LIKE 'Riviera Golf Estates%'")}
+            self.assertEqual(rows, {'Riviera Golf Estates 1': 0, 'Riviera Golf Estates 2': 0}, '#1 was already former')
+            for m in (date(2026, 10, 1), date(2027, 4, 1)):
+                self.assertNotIn('Riviera Golf Estates 2', [s['name'] for s in P.sites_for_month(conn, m)])
+                self.assertNotIn('Riviera Golf Estates 2', [r['account'] for r in P.maint_schedule(conn, m)])
+            self.assertTrue(P.sites_for_month(conn, date(2026, 10, 1)), 'other lakes still listed')
+            self.assertNotIn('Riviera Golf Estates 2', P._account_names(conn))
+        finally:
+            conn.close()
 
     def test_site_names_match_close_variants(self):
         for a, b in (('Pebblebrooke', 'Pebblebrook HOA'), ('Honda of Ft Myers', 'Honda Fort Myers'),

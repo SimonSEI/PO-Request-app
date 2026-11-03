@@ -12746,7 +12746,7 @@ SEED_LAKES = [
     ('Pebblebrook HOA', 'Both', '2023-11-17', '4 Pump Stations 9 Lake Fountains', None, Q, '$275.00', '$3,850 for both', '',
      None, 1, 1),
     ('Riviera Golf Estates 2', 'Lake', '2022-01-01', '1 Lake 1 Filter', '351 Charlemagne Blvd, Naples', '4,10', '$125.00',
-     '$200.00', '', 'April and October.', 1, 1),
+     '$200.00', '', 'April and October.', 1, 0),   # not tracked any more (Nov 2026)
     ('Rosewood HOA', 'Lake', '2026-07-13', '1 Lake', None, Q, '$125.00', '$687.50', '', None, 1, 1),
     ('Sanctuary @ Blue Heron', 'Lake', '2016-01-01', '3 Lakes 9 Filters 3 Pump Stations', None, Q, '$225.00', '$490.00', '',
      None, 1, 1),
@@ -12986,6 +12986,22 @@ def _apply_maint_vendors(c, now):
         return
     for name, v in (('Warm Springs Comm. Assoc.', 'Naples Electric'), ('Hodges Funeral Home', 'SiteOne')):
         c.execute('UPDATE pump_maint_accounts SET vendor=? WHERE name=?', (v, name))
+
+
+FORMER_ACCOUNTS_NOV26 = ('Riviera Golf Estates 2', 'Riviera Golf Estates #2')
+
+
+def _apply_former_nov26(c, now):
+    """Once (Nov 3 2026, the office): "We are not tracking RIVIERA GOLF ESTATES #2 anymore" - a former account:
+    off the diver list, the maintenance check and Jobber's auto-tracking. Its jobs and history stay."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('former_nov26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    ph = ','.join('?' * len(FORMER_ACCOUNTS_NOV26))
+    c.execute(f"UPDATE pump_dive_sites SET active=0, updated_by='Office (Nov 3 2026)', updated_at=? "
+              f"WHERE name COLLATE NOCASE IN ({ph})", (now, *FORMER_ACCOUNTS_NOV26))
+    c.execute(f"UPDATE pump_maint_accounts SET active=0, updated_by='Office (Nov 3 2026)', updated_at=? "
+              f"WHERE name COLLATE NOCASE IN ({ph})", (now, *FORMER_ACCOUNTS_NOV26))
 
 
 def _apply_wild_blue_oct28(c, now):
@@ -13472,6 +13488,7 @@ def init_account_tables(c):
     _bill_checked_when_invoiced(c, now)
     _drop_irrigation_quote_items(c, now)
     _apply_maint_vendors(c, now)
+    _apply_former_nov26(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
