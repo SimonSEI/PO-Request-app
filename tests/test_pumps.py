@@ -4012,6 +4012,62 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_quarterly_visit_done_this_quarter(self):
+        """Nov 3 2026 (the office, on "October quarterly pump maintenance: 2 no visit found" - FGCU PGA and University
+        Square CDD): "both of these are done for this quarter". A quarterly visit billed a month early or late counts,
+        and a site can be marked done by hand - from the to-do or the Maintenance page - and taken back."""
+        today = P._today
+        P._today = lambda: date(2026, 11, 3)
+        conn = P._conn()
+        try:
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            october = [r for r in P.maint_schedule(conn, date(2026, 10, 1)) if r['vendor'] == 'Wettech']
+            unbilled = {'FGCU - PGA Program', 'Miromar Outlets', 'University Square CDD'}
+            for r in october:
+                if r['account'] not in unbilled:
+                    conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, "
+                                 "created_at) VALUES ('bill', 'filed', 'Wettech', ?, '', '2026-10-14', 'qbill.pdf', "
+                                 "'2026-10-15 09:00:00')", (r['account'],))
+            # Miromar Outlets' quarterly visit was billed on Nov 2: still October's quarter.
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, created_at) "
+                         "VALUES ('bill', 'filed', 'Wettech', 'Miromar Outlets', '', '2026-11-02', 'qbill.pdf', "
+                         "'2026-11-02 09:00:00')")
+            conn.commit()
+            P.check_maintenance_done()
+            t = conn.execute("SELECT title, detail, link FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
+            missing = t['detail'].split('No visit found (no bill, no report): ')[1].split('.')[0].split(', ')
+            self.assertEqual(sorted(missing), ['FGCU - PGA Program', 'University Square CDD'])
+            self.assertIn('FGCU - PGA Program', json.loads(t['link'])['accounts'])
+            # A monthly site isn't covered by next month's bill.
+            self.assertFalse([r for r in P.maint_schedule(conn, date(2026, 10, 1))
+                              if r['frequency'] == 'monthly' and r['billed'][:7] == '2026-11'])
+        finally:
+            conn.close()
+        try:
+            for a in ('FGCU - PGA Program', 'University Square CDD'):
+                r = self.c.post('/pumps/api/maint/done', json={'month': '2026-10', 'vendor': 'Wettech', 'account': a})
+                self.assertTrue(r.get_json()['success'], r.get_data(as_text=True))
+            rows = {x['account']: x for x in r.get_json()['rows'] if x['vendor'] == 'Wettech'}
+            self.assertTrue(rows['FGCU - PGA Program']['done'])
+            conn = P._conn()
+            t = conn.execute("SELECT title, detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
+            conn.close()
+            self.assertNotIn('No visit found', t['detail'])
+            self.assertNotIn('FGCU', t['detail'])
+            # Taken back: on the list again.
+            self.c.post('/pumps/api/maint/done', json={'month': '2026-10', 'vendor': 'Wettech',
+                                                       'account': 'University Square CDD', 'done': False})
+            conn = P._conn()
+            t = conn.execute("SELECT detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
+            self.assertIn('No visit found (no bill, no report): University Square CDD.', t['detail'])
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
+            conn.execute("DELETE FROM pump_docs WHERE file_name='qbill.pdf'")
+            conn.execute("DELETE FROM pump_maint_done")
+            conn.commit()
+            conn.close()
+        finally:
+            P._today = today
+
     def test_site_names_match_close_variants(self):
         for a, b in (('Pebblebrooke', 'Pebblebrook HOA'), ('Honda of Ft Myers', 'Honda Fort Myers'),
                      ('Lely', 'Lely CDD - Lely Pump Station'),

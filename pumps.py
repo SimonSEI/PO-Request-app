@@ -491,7 +491,7 @@ def _conn():
 # scan, the Jobber sync and other background work are never recorded.
 UNDO_TABLES = ('pump_cases', 'pump_docs', 'pump_issues', 'pump_events', 'pump_scada', 'pump_client_contacts',
                'pump_jobber_items', 'pump_site_aliases', 'pump_todos', 'pump_dive_sites', 'pump_scada_accounts',
-               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices')
+               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices', 'pump_maint_done')
 _UNDO_ACTION = contextvars.ContextVar('pump_undo_action', default=0)
 
 
@@ -13370,6 +13370,17 @@ def init_account_tables(c):
                   updated_at TEXT)''')
     # Whether the subcontractor (Wettech, Gulfshore) has been told about an
     # account's maintenance in a month - one row per account, vendor and month.
+    # A maintenance visit the office marks done by hand ("both of these are done for this quarter", Nov 2026):
+    # it counts as made whatever bill or report is in.
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_done (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  month TEXT NOT NULL,
+                  account TEXT NOT NULL,
+                  vendor TEXT NOT NULL,
+                  note TEXT DEFAULT '',
+                  done_by TEXT DEFAULT '',
+                  done_at TEXT,
+                  UNIQUE(month, account, vendor))''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_notices (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   month TEXT NOT NULL,
@@ -16579,15 +16590,22 @@ def maint_schedule(conn, month_date):
     dive_mail = conn.execute("SELECT sent_at, sent_by, to_addr FROM pump_dive_emails WHERE month=? AND "
                              "COALESCE(error, '')='' ORDER BY id LIMIT 1", (key,)).fetchone()
     visits = [json.loads(r['link'] or '{}') for r in conn.execute("SELECT link FROM pump_todos WHERE kind='visit'")]
+    done_by_hand = {(r['account'], r['vendor']): dict(r) for r in
+                    conn.execute('SELECT * FROM pump_maint_done WHERE month=?', (key,))}
+    # A quarterly visit made a month early or late is still the quarter's (FGCU PGA, University Square, Nov 2026):
+    # its bill or report counts from the month before to the month after.
+    prev = (month_date.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
+    after = (nxt + timedelta(days=32)).replace(day=1).isoformat()
     # A service report for the visit - or, for the diver (who sends no report), Gulfshore's bill for it.
     reports = [dict(r) for r in conn.execute(
         "SELECT vendor, client_name, site, file_name, created_at FROM pump_docs WHERE (kind='report' "
         "OR (kind='bill' AND vendor='Gulfshore')) AND status != 'dismissed' AND created_at >= ? AND created_at < ?",
-        (key, nxt.isoformat()))]
+        (prev, after))]
     bills = [dict(r) for r in conn.execute(
         "SELECT vendor, client_name, site, COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) AS date FROM pump_docs "
         "WHERE kind='bill' AND status != 'dismissed' AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) >= ? "
-        "AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) < ?", (key + '-01', nxt.isoformat()))]
+        "AND COALESCE(NULLIF(doc_date, ''), substr(created_at, 1, 10)) < ?", (prev, after))]
+    in_month = lambda d: key <= (d or '')[:7] < nxt.isoformat()[:7]
     dive_ids = {s['id'] for s in sites_for_month(conn, month_date)}
     rows = []
     for a in accounts(conn):
@@ -16611,15 +16629,17 @@ def maint_schedule(conn, month_date):
             approved = next((v.get('since') for v in visits if vendor in (v.get('vendors') or [])
                              and key <= (v.get('since') or '') < nxt.isoformat()
                              and _is_account(names, v.get('account'))), '')
-            report = next((r['created_at'][:10] for r in reports if r['vendor'] == vendor and (
+            window = (lambda d: True) if freq == 'quarterly' else in_month
+            report = next((r['created_at'][:10] for r in reports if r['vendor'] == vendor and window(r['created_at']) and (
                 _is_account(names, r['client_name']) or any(site_name_matches(x, r['client_name']) for x in names) or
                 fuzzy_has(_core_name(a['name']), f"{r['site']} {r['file_name']}"))), '')
             # A bill from the vendor for the site dated in the month is the visit made, report or not (Nov 2026).
-            billed = next((b['date'] for b in bills if b['vendor'] == vendor and (
+            billed = next((b['date'] for b in bills if b['vendor'] == vendor and window(b['date']) and (
                 _is_account(names, b['client_name']) or any(site_name_matches(x, b['client_name']) or
                                                             site_name_matches(x, b['site']) for x in names))), '')
             rows.append({'account': a['name'], 'vendor': vendor, 'what': what, 'where': where, 'hold': hold,
-                         'notified': n, 'approved': approved, 'report': report, 'billed': billed, 'frequency': freq})
+                         'notified': n, 'approved': approved, 'report': report, 'billed': billed, 'frequency': freq,
+                         'done': done_by_hand.get((a['name'], vendor))})
     rows.sort(key=lambda r: (bool(r['notified']), r['vendor'], r['account'].lower()))
     return rows
 
@@ -16651,6 +16671,7 @@ def check_maintenance_done(today=None):
                 for freq in ('quarterly', 'monthly'):
                     key = f"maint-check:{ym}:{vendor}:{freq}"
                     mine = [r for r in rows if r['vendor'] == vendor and r['frequency'] == freq]
+                    mine = [r for r in mine if not r['done']]   # marked done by hand
                     none = [r for r in mine if not r['report'] and not r['billed']]
                     no_report = [r for r in mine if not r['report'] and r['billed']] if vendor == 'Wettech' else []
                     if not none and not no_report:
@@ -16667,10 +16688,12 @@ def check_maintenance_done(today=None):
                         f"{who}. No visit found (no bill, no report): {names(none)}." if none else '',
                         f"Not told yet: {', '.join(untold[:20])}." if untold else '',
                         f"Visit billed, report missing: {names(no_report)}." if no_report else '',
-                        "Each drops off as its bill or report comes in - see Maintenance.") if x)
-                    add_todo(conn, key, title, detail, {'label': 'Maintenance', 'tab': 'maint'})
-                    conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL',
-                                 (title[:300], detail[:2000], key))
+                        "Each drops off as its bill or report comes in, or when you mark it done.") if x)
+                    link = {'label': 'Maintenance', 'tab': 'maint', 'month': ym, 'vendor': vendor,
+                            'accounts': [r['account'] for r in none + no_report][:40]}
+                    add_todo(conn, key, title, detail, link)
+                    conn.execute('UPDATE pump_todos SET title=?, detail=?, link=? WHERE key=? AND done_at IS NULL',
+                                 (title[:300], detail[:2000], json.dumps(link), key))
         conn.commit()
     finally:
         conn.close()
@@ -16704,6 +16727,35 @@ def h_maint_schedule(actor):
     conn = _conn()
     try:
         return _schedule_payload(conn, _month_arg(request.args.get('month')))
+    finally:
+        conn.close()
+
+
+@api('/maint/done', methods=('POST',))
+def h_maint_done(actor):
+    """{"month": "YYYY-MM", "vendor", "account", "done": true|false, "note"}: a visit done (or not) by the office's
+    word - it drops off the maintenance check."""
+    d = _json()
+    month_date = _month_arg(d.get('month'))
+    vendor, name = str(d.get('vendor') or '').strip(), str(d.get('account') or '').strip()
+    if vendor not in ('Wettech', 'Gulfshore') or not name:
+        raise ValueError('Which account and subcontractor?')
+    key, on = month_date.strftime('%Y-%m'), d.get('done', True) not in (False, 0, '0', 'false')
+    conn = _conn()
+    try:
+        if on:
+            conn.execute('INSERT OR REPLACE INTO pump_maint_done (month, account, vendor, note, done_by, done_at) '
+                         'VALUES (?,?,?,?,?,?)', (key, name, vendor, str(d.get('note') or '')[:500], actor or '', _now_text()))
+        else:
+            conn.execute('DELETE FROM pump_maint_done WHERE month=? AND account=? AND vendor=?', (key, name, vendor))
+        _event(conn, actor, f"{month_date.strftime('%B')} maintenance {'done' if on else 'not done'}", f'{name} ({vendor})')
+        conn.commit()
+    finally:
+        conn.close()
+    check_maintenance_done()   # the to-do drops the site (or closes)
+    conn = _conn()
+    try:
+        return _schedule_payload(conn, month_date)
     finally:
         conn.close()
 

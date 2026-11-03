@@ -654,6 +654,7 @@ function todoRow(t){
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">${esc(t.link.label || 'Open in Jobber')} ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.link.close_job ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="closeJobberJob('${esc(t.link.close_job)}', this)">Close job in Jobber</button></div>` : ''}
       ${t.link.tab && !t.link.uri && !t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s" onclick="showTab('${esc(t.link.tab)}')">Open ${esc(t.link.label || t.link.tab)}</button></div>` : ''}
+      ${(t.key || '').startsWith('maint-check:') && (t.link.accounts || []).length ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><span class="note" style="align-self:center">Done already?</span>${t.link.accounts.map(a => `<button class="btn s" title="Mark ${esc(a)}'s visit done - it drops off this list" onclick='maintDone(${JSON.stringify(t.link.month)}, ${JSON.stringify(t.link.vendor)}, ${JSON.stringify(a).replace(/'/g, "&#39;")}, true)'>✓ ${esc(a)}</button>`).join('')}</div>` : ''}
       ${t.link.draft_scada ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="draftScadaQuote(${t.link.scada_id}, this)">Draft quote in Jobber</button></div>` : ''}
       ${(t.key || '').startsWith('gulfshore-unbilled:') && t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" title="Billed already - type our Jobber invoice number" onclick="linkInvoice(${t.link.case_id})">🔗 Link our invoice</button><button class="btn s" title="Billed through a contract - no invoice to link" onclick="billsPayOk([${t.link.case_id}])">OK to pay now</button></div>` : ''}
       ${t.kind === 'diver_email' ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="diverTodo('${esc(t.link.month || '')}')">Email ready - copy &amp; attach</button><a class="btn s" href="/pumps/api/dives/docx?month=${encodeURIComponent(t.link.month || '')}">⬇ Word list</a></div>` : ''}</div>
@@ -2820,7 +2821,9 @@ function drawMaintSchedule(){
   const cell = (r, who) => { if (!r) return `<span class="note" title="This account has no ${who === 'Justin' ? 'Wettech pump' : 'Gulfshore lake'} visit this month">— not for ${who}</span>`; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
       : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark told</button>`)
-      + `<div class="note">${r.report ? '✓ report ' + esc(niceDay(r.report)) : r.billed ? '✓ billed ' + esc(niceDay(r.billed)) + ' · report not in' : 'report not in yet'}</div>`; };
+      + `<div class="note">${r.done ? `<span class="ok">✓ done</span> (marked ${esc(niceDay(d10(r.done.done_at)))}${r.done.done_by ? ' by ' + esc(r.done.done_by) : ''}) <button class="btn s" title="Not done after all" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, false)'>↺</button>`
+        : (r.report ? '✓ report ' + esc(niceDay(r.report)) : r.billed ? '✓ billed ' + esc(niceDay(r.billed)) + ' · report not in' : 'report not in yet')
+          + (!r.report ? ` <button class="btn s" title="The visit was made - take it off the maintenance check" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, true)'>✓ Done</button>` : '')}</div>`; };
   document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
     const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
     return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msTick(this)" ${(w && !w.notified) || (g && !g.notified) ? (MS_SEL.has(a.account) ? 'checked' : '') : 'disabled'}></td>
@@ -2864,6 +2867,14 @@ function maintNotifiedAsk(account, vendor){
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
     <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tom said the week of the 20th"></label></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotified(${JSON.stringify(account).replace(/"/g, '&quot;')}, '${vendor}', true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)">Save</button>`);
+}
+// A visit the office knows was made (Nov 2026: "both of these are done for this quarter"): off the maintenance check.
+async function maintDone(month, vendor, account, on){
+  const j = await api('/maint/done', {method:'POST', body:{month, vendor, account, done: on}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(on ? `${account}: done` : `${account}: not done`);
+  if (typeof MS !== 'undefined' && MS && MS.month === j.month) { MS = j; drawMaintSchedule(); }
+  loadToday();
 }
 async function maintNotified(account, vendor, on, how, note){
   const accounts = Array.isArray(account) ? account : [account];
