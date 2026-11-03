@@ -4798,6 +4798,44 @@ def quote_moved(conn, jid, actor='Jobber sync'):
     return c['id']
 
 
+def move_quote_docs(conn, from_case, to_case, old_number, new, actor='Jobber sync'):
+    """The vendor's quote the wrong Jobber quote was drafted from goes to the job holding its replacement, and now
+    points at that quote (Rosewood, Nov 2026: Wettech's quote stayed on the control box item when #9245 went on job
+    #14647). Moved as is - no steps, drafts or to-dos redone. Returns the documents moved."""
+    moved = []
+    for d in conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='quote' AND status != 'dismissed'",
+                          (from_case,)).fetchall():
+        dj = json.loads(d['jobber'] or '{}')
+        if str(dj.get('quote_number') or '') != str(old_number):
+            continue
+        dj.update(quote_id=new['jobber_id'], quote_number=new['number'], quote_uri=new['web_uri'] or '',
+                  quote_status=new['status'], replaced_quote=str(old_number))
+        conn.execute('UPDATE pump_docs SET case_id=?, jobber=? WHERE id=?', (to_case, json.dumps(dj), d['id']))
+        conn.execute("UPDATE pump_cases SET vendor_quote_number=COALESCE(NULLIF(vendor_quote_number, ''), ?), "
+                     "vendor_quote_amount=COALESCE(vendor_quote_amount, ?), vendor_quote_total=COALESCE(vendor_quote_total, ?) "
+                     "WHERE id=?", (d['doc_number'] or '', d['subtotal'], d['total'], to_case))
+        what = f"{d['vendor'] or 'Vendor'} quote {d['file_name'] or ''}".strip()
+        _event(conn, actor, 'document moved', f"{what} - our quote #{old_number} was replaced by #{new['number']} on "
+                                              f"job #{to_case}, so it went there", case_id=from_case, doc_id=d['id'])
+        _event(conn, actor, 'document moved', f"{what} - the {d['vendor'] or 'vendor'} quote behind #{new['number']} "
+                                              f"(it was on job #{from_case} with #{old_number})", case_id=to_case, doc_id=d['id'])
+        moved.append(d['id'])
+    return moved
+
+
+def _move_wrong_client_docs(conn, actor):
+    """Jobs that gave up a wrong-client quote to another job: its vendor quote follows (repairs ones done before)."""
+    for c in conn.execute("SELECT id, jobber FROM pump_cases WHERE status='open' AND jobber LIKE '%wrong client%'").fetchall():
+        g = json.loads(c['jobber'] or '{}').get('quote_gone') or {}
+        to = g.get('on_case')
+        if g.get('why') != 'wrong client' or not to or to == c['id'] or not g.get('replaced_by'):
+            continue
+        new = conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND number=? AND case_id=?",
+                           (g['replaced_by'], to)).fetchone()
+        if new:
+            move_quote_docs(conn, c['id'], to, g.get('number'), new, actor)
+
+
 def fix_wrong_client_quotes(conn, actor='Jobber sync'):
     """A quote sent to the wrong client and resent to the right one (Rosewood, Nov 2026: our draft #9244 went to
     ROSEWOOD OF FALLING WATER; #9245, the same quote and price, went to Rosewood HOA c/o Guardian 8 minutes
@@ -4848,10 +4886,12 @@ def fix_wrong_client_quotes(conn, actor='Jobber sync'):
         else:
             _event(conn, actor, 'quote unlinked', f"Quote #{old['number']} taken off. Its replacement #{n['number']} "
                                                   f"is on job #{n['case_id']}", case_id=c['id'])
+            move_quote_docs(conn, c['id'], n['case_id'], old['number'], n, actor)
         add_todo(conn, f"archive-quote:{qid}", f"Archive quote #{old['number']} in Jobber - it went to the wrong client",
                  f"#{old['number']} went to {old['client_name']}; the right quote is #{n['number']} "
                  f"({n['client_name']}). Nothing was changed in Jobber.", {'case_id': c['id'], 'uri': old['web_uri'] or ''})
         done.append((c['id'], old['number'], n['number']))
+    _move_wrong_client_docs(conn, actor)
     return done
 
 
@@ -11372,7 +11412,7 @@ SEED_DIVE_SITES = [
     ('Sopra Luxury Living', '1 Pump 1 Lake', '3280 Champion Ring Road, Fort Myers, Florida 33905', '', 'hold',
      'Called client to set up visit - waiting on approval.'),
     ('Tuscany Point Trail Association', '1 Lake', 'Tuscany Pointe Trl, Naples, FL 34120', 'Gate 2253', 'active', ''),
-    ('University Square CDD', '1 Pump 1 Filter', '10801 Corkscrew Road, Estero, FL',
+    ('University Village CDD', '1 Pump 1 Filter', '10801 Corkscrew Road, Estero, FL',
      'Second pump and lake filter not used.', 'active', ''),
     ('Watercrest @ Falling Waters', '1 Lake 1 Filter', '2326 Magnolia Lane, Naples', '', 'active', ''),
     ('Westminster HOA', '4 Lakes 9 Filters', '2001 Oxford Ridge Circle, Lehigh Acres', '', 'active', ''),
@@ -12677,7 +12717,7 @@ SEED_MAINT = [
      '', 1),
     ('Tuscany Point Trail Association', 'Pump', '2022-04-29', '1 Lake, Pump', 'Tuscany Pointe Trl, Naples, FL 34120', Q,
      '$125.00', '', '$550.00', '', 1),
-    ('University Square CDD', 'Pump', '2024-12-24', '3 Pumps and 2 Lakes', '10801 Corkscrew Road, Estero, FL', Q, '$350.00',
+    ('University Village CDD', 'Pump', '2024-12-24', '3 Pumps and 2 Lakes', '10801 Corkscrew Road, Estero, FL', Q, '$350.00',
      '', '', '', 1),
     ('Warm Springs Comm. Assoc.', 'Pumps', '2023-08-23', '10 Pump Stations', '3813 Helsman Drive, Naples FL 34120', Q, '',
      '$250.00', '$475.00', 'Naples Electric does this.', 1),
@@ -12756,7 +12796,7 @@ SEED_LAKES = [
     ('The Reserve @ Estero', 'Both', '2025-01-14', '1 Pump 1 Lake', '9350 La Bianco St, Estero, FL 33967', '1,7', '$125.00',
      'Approx. $125.00', '', 'January and July.', 1, 1),
     ('Tuscany Point Trail Association', 'Both', '2022-04-29', '1 Lake', None, Q, '$125.00', '$550.00', '', None, 1, 1),
-    ('University Square CDD', 'Both', '2024-12-06', '1 Pump 1 Filter', None, Q, '$125.00', '', '', None, 1, 1),
+    ('University Village CDD', 'Both', '2024-12-06', '1 Pump 1 Filter', None, Q, '$125.00', '', '', None, 1, 1),
     ('Warm Springs Comm. Assoc.', 'Both', '2023-08-23', 'Lake', '3813 Helsman Drive, Naples FL 34120', '10', '', '$450.00',
      '$450.00', 'October only - Naples Electric does this, not the diver.', 0, 1),
     ('Watercrest @ Falling Waters', 'Both', '2017-01-01', '1 Lake 1 Filter', None, Q, '$125.00', '', '', None, 1, 1),
@@ -12989,6 +13029,20 @@ def _apply_maint_vendors(c, now):
 
 
 FORMER_ACCOUNTS_NOV26 = ('Riviera Golf Estates 2', 'Riviera Golf Estates #2')
+ACCOUNT_RENAMES_NOV26 = (('University Square CDD', 'University Village CDD'),)
+
+
+def _apply_renames_nov26(c, now):
+    """Once (Nov 3 2026, the office): "University Square is supposed to be University Village" - the account's
+    name everywhere it's kept: the maintenance and lake lists, who was told, visits marked done, open jobs."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('renames_nov26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    for old, new in ACCOUNT_RENAMES_NOV26:
+        for table, col in (('pump_maint_accounts', 'name'), ('pump_dive_sites', 'name'), ('pump_maint_notices', 'account'),
+                           ('pump_maint_done', 'account'), ('pump_cases', 'client_name'), ('pump_site_aliases', 'place')):
+            if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+                c.execute(f'UPDATE OR IGNORE {table} SET {col}=? WHERE {col}=?', (new, old))
 
 
 def _apply_former_nov26(c, now):
@@ -13489,6 +13543,7 @@ def init_account_tables(c):
     _drop_irrigation_quote_items(c, now)
     _apply_maint_vendors(c, now)
     _apply_former_nov26(c, now)
+    _apply_renames_nov26(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
     _fix_quote_needed_dates(c, now)
@@ -15829,7 +15884,7 @@ def h_case_sign_quote_preview(actor, case_id):
 
 def _same_account(a, b):
     ca, cb = _core_name(a).lower(), _core_name(b).lower()
-    if not ca or not cb:
+    if not ca or not cb or (ca != cb and _distinct_sites(ca, cb)):
         return False
     return ca == cb or similarity(ca, cb) >= 0.8 or fuzzy_has(ca, cb) or fuzzy_has(cb, ca)
 
@@ -16585,12 +16640,21 @@ def _tok_eq(a, b):
     return a == b or (min(len(a), len(b)) >= 5 and (a.startswith(b) or b.startswith(a)) and abs(len(a) - len(b)) <= 2)
 
 
+# Words that make a different place of the same name: "University Village Shops" is not "University Village CDD".
+_SITE_DISTINCT = {'shops', 'north', 'south', 'east', 'west'}
+
+
+def _distinct_sites(a, b):
+    ta, tb = _site_tokens(a), _site_tokens(b)
+    return bool((ta ^ tb) & _SITE_DISTINCT)
+
+
 def site_name_matches(a, b):
     """Two names for the same site (Nov 2026): one's telling words all found in the other - "Pebblebrooke" and
     "Pebblebrook HOA", "Honda of Ft Myers" and "Honda Fort Myers", "Lely" and "Lely CDD - Lely Pump Station",
     "Sunshine Lake Park - Port Charlotte" and "Charlotte County - Sunshine Lake Park"."""
     ta, tb = _site_tokens(a), _site_tokens(b)
-    if not ta or not tb:
+    if not ta or not tb or _distinct_sites(a, b):
         return False
     small, big = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
     if not any(len(w) >= 4 for w in small):
@@ -16609,7 +16673,7 @@ def maint_schedule(conn, month_date):
     visits = [json.loads(r['link'] or '{}') for r in conn.execute("SELECT link FROM pump_todos WHERE kind='visit'")]
     done_by_hand = {(r['account'], r['vendor']): dict(r) for r in
                     conn.execute('SELECT * FROM pump_maint_done WHERE month=?', (key,))}
-    # A quarterly visit made a month early or late is still the quarter's (FGCU PGA, University Square, Nov 2026):
+    # A quarterly visit made a month early or late is still the quarter's (FGCU PGA, University Village, Nov 2026):
     # its bill or report counts from the month before to the month after.
     prev = (month_date.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
     after = (nxt + timedelta(days=32)).replace(day=1).isoformat()

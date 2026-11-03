@@ -3738,6 +3738,11 @@ class PumpsTest(unittest.TestCase):
                                      'vendor': 'Wettech', 'opened_on': '2026-11-02'}, 'test')
             conn.execute("UPDATE pump_cases SET jobber_client_id=?, jobber_property_id=? WHERE id=?", (FW, FWP, b))
             P._link_item(conn, 'Q-RW9244', b, 'test')
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, doc_number, subtotal, total, file_name, "
+                         "case_id, jobber, created_at) VALUES ('quote', 'filed', 'Wettech', 'Rosewood', 'WQ-77', 1202.79, "
+                         "1202.79, 'Rosewood _ Falling Waters .docx', ?, ?, '2026-11-02 16:40:00')",
+                         (b, json.dumps({'quote_id': 'Q-RW9244', 'quote_number': '9244'})))
+            wq = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
             P._set_step(conn, b, 'vendor_quote', at='2026-11-02', by='test')
             P._set_step(conn, b, 'client_quote', at='2026-11-02', by='test')
             # The sync brings in #9245.
@@ -3761,6 +3766,11 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(ca['job_status']['kind'], 'waiting_approval')
         self.assertTrue(any('auto-linked: matched client + property (Rosewood HOA c/o Guardian Management Property + '
                             '1655 Windy Pines Drive, Naples)' in e['detail'] for e in ca['events']))
+        # Wettech's quote went with #9245 to job #14647.
+        self.assertEqual([d['id'] for d in ca['docs']], [wq])
+        self.assertEqual(ca['docs'][0]['jobber']['quote_number'], '9245')
+        self.assertEqual(ca['vendor_quote_number'], 'WQ-77')
+        self.assertEqual(cb['docs'], [])
         self.assertNotIn('quote', cb['jobber'])
         self.assertEqual(cb['jobber']['quote_gone'], {'number': '9244', 'why': 'wrong client', 'at': P._today().isoformat(),
                                                       'replaced_by': '9245', 'on_case': a})
@@ -3804,6 +3814,7 @@ class PumpsTest(unittest.TestCase):
         conn = P._conn()
         conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?, ?)", (a, b))
         conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id LIKE 'Q-RW%' OR jobber_id='J-RW14647'")
+        conn.execute("UPDATE pump_docs SET status='dismissed' WHERE file_name='Rosewood _ Falling Waters .docx'")
         conn.commit()
         conn.close()
 
@@ -3972,12 +3983,12 @@ class PumpsTest(unittest.TestCase):
             self.assertIn('Charlotte County - Sunshine Lake Park', monthly)
             self.assertIn('Quail Run', monthly)
             self.assertNotIn('Quail Run', quarterly)
-            # October as it was: Wettech billed every site but FGCU PGA, Miromar Outlets and University Square CDD,
+            # October as it was: Wettech billed every site but FGCU PGA, Miromar Outlets and University Village CDD,
             # some under other names.
             variants = {'Pebblebrook HOA': 'Pebblebrooke', 'Honda Fort Myers': 'Honda of Ft Myers',
                         'Lely CDD - Lely Pump Station': 'Lely',
                         'Charlotte County - Sunshine Lake Park': 'Sunshine Lake Park - Port Charlotte'}
-            unbilled = {'FGCU - PGA Program', 'Miromar Outlets', 'University Square CDD'}
+            unbilled = {'FGCU - PGA Program', 'Miromar Outlets', 'University Village CDD'}
             for a in sorted(accounts - unbilled):
                 conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, created_at) "
                              "VALUES ('bill', 'filed', 'Wettech', ?, '', '2026-10-14', 'bill.pdf', '2026-10-15 09:00:00')",
@@ -4025,7 +4036,7 @@ class PumpsTest(unittest.TestCase):
         try:
             conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
             october = [r for r in P.maint_schedule(conn, date(2026, 10, 1)) if r['vendor'] == 'Wettech']
-            unbilled = {'FGCU - PGA Program', 'Miromar Outlets', 'University Square CDD'}
+            unbilled = {'FGCU - PGA Program', 'Miromar Outlets', 'University Village CDD'}
             for r in october:
                 if r['account'] not in unbilled:
                     conn.execute("INSERT INTO pump_docs (kind, status, vendor, client_name, site, doc_date, file_name, "
@@ -4039,7 +4050,7 @@ class PumpsTest(unittest.TestCase):
             P.check_maintenance_done()
             t = conn.execute("SELECT title, detail, link FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
             missing = t['detail'].split('No invoice yet: ')[1].split('.')[0].split(', ')
-            self.assertEqual(sorted(missing), ['FGCU - PGA Program', 'University Square CDD'])
+            self.assertEqual(sorted(missing), ['FGCU - PGA Program', 'University Village CDD'])
             self.assertIn('FGCU - PGA Program', json.loads(t['link'])['accounts'])
             # A monthly site isn't covered by next month's bill.
             self.assertFalse([r for r in P.maint_schedule(conn, date(2026, 10, 1))
@@ -4047,7 +4058,7 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
         try:
-            for a in ('FGCU - PGA Program', 'University Square CDD'):
+            for a in ('FGCU - PGA Program', 'University Village CDD'):
                 r = self.c.post('/pumps/api/maint/done', json={'month': '2026-10', 'vendor': 'Wettech', 'account': a})
                 self.assertTrue(r.get_json()['success'], r.get_data(as_text=True))
             rows = {x['account']: x for x in r.get_json()['rows'] if x['vendor'] == 'Wettech'}
@@ -4059,10 +4070,10 @@ class PumpsTest(unittest.TestCase):
             self.assertNotIn('FGCU', t['detail'])
             # Taken back: on the list again.
             self.c.post('/pumps/api/maint/done', json={'month': '2026-10', 'vendor': 'Wettech',
-                                                       'account': 'University Square CDD', 'done': False})
+                                                       'account': 'University Village CDD', 'done': False})
             conn = P._conn()
             t = conn.execute("SELECT detail FROM pump_todos WHERE key='maint-check:2026-10:Wettech:quarterly'").fetchone()
-            self.assertIn('No invoice yet: University Square CDD.', t['detail'])
+            self.assertIn('No invoice yet: University Village CDD.', t['detail'])
             conn.execute("DELETE FROM pump_todos WHERE key LIKE 'maint-check:%'")
             conn.execute("DELETE FROM pump_docs WHERE file_name='qbill.pdf'")
             conn.execute("DELETE FROM pump_maint_done")
@@ -4102,6 +4113,32 @@ class PumpsTest(unittest.TestCase):
             conn.close()
             P._today = today
 
+    def test_university_square_is_university_village(self):
+        """Nov 3 2026, the office: "University Square is supposed to be University Village". Its own name in every
+        list; University Village Shops (a different account) never stands in for it."""
+        conn = P._conn()
+        try:
+            for t, col in (('pump_maint_accounts', 'name'), ('pump_dive_sites', 'name')):
+                names = [r[0] for r in conn.execute(f"SELECT {col} FROM {t} WHERE {col} LIKE 'University%'")]
+                self.assertIn('University Village CDD', names, t)
+                self.assertNotIn('University Square CDD', names, t)
+            # Renamed once on deploy, wherever the old name was kept.
+            conn.execute("UPDATE pump_maint_accounts SET name='University Square CDD' WHERE name='University Village CDD'")
+            conn.execute("INSERT INTO pump_maint_notices (month, account, vendor, notified_at) VALUES "
+                         "('2026-10', 'University Square CDD', 'Wettech', '2026-10-01')")
+            conn.execute("DELETE FROM pump_state WHERE key='renames_nov26'")
+            P._apply_renames_nov26(conn.cursor(), P._now_text())
+            self.assertTrue(conn.execute("SELECT 1 FROM pump_maint_accounts WHERE name='University Village CDD'").fetchone())
+            self.assertTrue(conn.execute("SELECT 1 FROM pump_maint_notices WHERE account='University Village CDD'").fetchone())
+            conn.execute("DELETE FROM pump_maint_notices WHERE month='2026-10' AND account='University Village CDD'")
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertFalse(P._same_account('University Village CDD', 'University Village Shops, LLC'))
+        self.assertTrue(P._same_account('University Village CDD', 'UNIVERSITY VILLAGE CDD'))
+        self.assertFalse(P.site_name_matches('University Village CDD', 'University Village Shops'))
+        self.assertTrue(P.site_name_matches('University Village CDD', 'University Village'))
+
     def test_riviera_golf_estates_2_not_tracked(self):
         """Nov 3 2026, the office: "We are not tracking RIVIERA GOLF ESTATES #2 anymore" - a former account, off the
         diver list and maintenance check and not auto-tracked from Jobber."""
@@ -4123,7 +4160,7 @@ class PumpsTest(unittest.TestCase):
                      ('Lely', 'Lely CDD - Lely Pump Station'),
                      ('Sunshine Lake Park - Port Charlotte', 'Charlotte County - Sunshine Lake Park')):
             self.assertTrue(P.site_name_matches(a, b), (a, b))
-        for a, b in (('Miromar Outlets', 'University Square CDD'), ('FGCU - PGA Program', 'FGCU Library'),
+        for a, b in (('Miromar Outlets', 'University Village CDD'), ('University Village CDD', 'University Village Shops, LLC'), ('FGCU - PGA Program', 'FGCU Library'),
                      ('Huntington Lakes Phase 3', 'Huntington Lakes Phase 5')):
             self.assertFalse(P.site_name_matches(a, b), (a, b))
 
