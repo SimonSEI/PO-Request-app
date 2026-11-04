@@ -3285,6 +3285,39 @@ def grok_match_bill(conn, doc):
     return cid, f"matched by Grok ({conf:.0%}): {str(ans.get('reason') or '')[:200]}"
 
 
+def bring_doc_to_case(conn, doc_id, case_id, actor):
+    """A document already in the app, uploaded onto a job: moved onto it. A vendor quote on a job that already has
+    its Jobber quote goes on as is, pointing at that quote - no drafts, steps or statuses redone. Anything else is
+    filed again on the job. Returns the job."""
+    d = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+    c = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    q = (json.loads((c['jobber'] if c else '') or '{}').get('quote') or {})
+    if d['kind'] == 'quote' and q.get('id'):
+        dj = json.loads(d['jobber'] or '{}')
+        old = str(dj.get('quote_number') or '')
+        dj.update(quote_id=q['id'], quote_number=str(q.get('number') or ''), quote_uri=q.get('uri') or '',
+                  quote_status=q.get('status') or '')
+        if old and old != dj['quote_number']:
+            dj['replaced_quote'] = old
+        conn.execute("UPDATE pump_docs SET case_id=?, jobber=?, status='filed', updated_at=? WHERE id=?",
+                     (case_id, json.dumps(dj), _now_text(), doc_id))
+        conn.execute("UPDATE pump_cases SET vendor_quote_number=COALESCE(NULLIF(vendor_quote_number, ''), ?), "
+                     "vendor_quote_amount=COALESCE(vendor_quote_amount, ?), vendor_quote_total=COALESCE(vendor_quote_total, ?), "
+                     "updated_at=? WHERE id=?", (d['doc_number'] or '', d['subtotal'], d['total'], _now_text(), case_id))
+        what = f"{d['vendor'] or 'Vendor'} quote {d['file_name'] or ''}".strip()
+        if d['case_id']:
+            _event(conn, actor, 'document moved', f"{what} - uploaded onto job #{case_id}, moved there", case_id=d['case_id'],
+                   doc_id=doc_id)
+        _event(conn, actor, 'document moved', f"{what} - uploaded here" + (f" (it was on job #{d['case_id']})"
+                                                                            if d['case_id'] else '')
+               + f"; it's behind our quote #{dj['quote_number']}", case_id=case_id, doc_id=doc_id)
+        _refresh_case(conn, case_id)
+        return case_id
+    if d['status'] == 'dismissed':
+        conn.execute("UPDATE pump_docs SET status='new' WHERE id=?", (doc_id,))
+    return refile_document(conn, doc_id, actor, case_id)
+
+
 def refile_document(conn, doc_id, actor, target=None):
     """A document filed on the wrong item: off it - what it put there undone
     (its bill number and amounts, Bill from vendor / Work done when it ticked
@@ -3480,6 +3513,23 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         sha = hashlib.sha256(data).hexdigest()
         dup = conn.execute('SELECT id, case_id FROM pump_docs WHERE file_sha=?', (sha,)).fetchone()
         if dup:
+            fp = conn.execute('SELECT file_path FROM pump_docs WHERE id=?', (dup['id'],)).fetchone()[0]
+            if not fp or not os.path.exists(fp):
+                # Its file is gone from the server (Rosewood, Nov 2026: "would not open and says it does not
+                # exist"): the copy sent now is kept in its place.
+                path, _ = _store_file(data, filename)
+                conn.execute('UPDATE pump_docs SET file_path=?, updated_at=? WHERE id=?', (path, _now_text(), dup['id']))
+                _event(conn, actor, 'file restored', f'{filename} - its file was missing; the one sent now is kept',
+                       case_id=dup['case_id'], doc_id=dup['id'])
+                conn.commit()
+            if case_id and dup['case_id'] != case_id and \
+                    conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status != 'cancelled'", (case_id,)).fetchone():
+                # Uploaded onto a job: it goes on that job, wherever it was (Rosewood #14647, Nov 2026: Wettech's
+                # quote sat on the control box item and the upload left it there - "already have this file").
+                moved_to = bring_doc_to_case(conn, dup['id'], case_id, actor)
+                conn.commit()
+                kind = conn.execute('SELECT kind FROM pump_docs WHERE id=?', (dup['id'],)).fetchone()[0]
+                return {'doc_id': dup['id'], 'case_id': moved_to, 'kind': kind, 'review': '', 'moved': True}
             prev = dict(conn.execute('SELECT kind, status, jobber, review_reason FROM pump_docs WHERE id=?',
                                      (dup['id'],)).fetchone())
             pj = json.loads(prev['jobber'] or '{}')
@@ -5033,7 +5083,8 @@ def move_quote_docs(conn, from_case, to_case, old_number, new, actor='Jobber syn
 
 def _move_wrong_client_docs(conn, actor):
     """Jobs that gave up a wrong-client quote to another job: its vendor quote follows (repairs ones done before)."""
-    for c in conn.execute("SELECT id, jobber FROM pump_cases WHERE status='open' AND jobber LIKE '%wrong client%'").fetchall():
+    # Any job - closed or removed since (the control box item, Nov 2026) - still hands its vendor quote over.
+    for c in conn.execute("SELECT id, jobber FROM pump_cases WHERE jobber LIKE '%wrong client%'").fetchall():
         g = json.loads(c['jobber'] or '{}').get('quote_gone') or {}
         to = g.get('on_case')
         if g.get('why') != 'wrong client' or not to or to == c['id'] or not g.get('replaced_by'):

@@ -3768,6 +3768,60 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_quote_uploaded_onto_a_job_goes_there_even_if_already_in_the_app(self):
+        """Nov 4 2026, Rosewood #14647: Wettech's quote (Rosewood _ Falling Waters .docx) sat on the control box item,
+        since removed, with our wrong-client #9244. Uploading it onto #14647 said "already have this file" and left it
+        there; it "would not open and says it does not exist" (its file was gone). Now it goes on the job, pointing at
+        the job's quote #9245, its file is kept again, and the sync's hand-over covers removed items too."""
+        conn = P._conn()
+        try:
+            a = P.create_case(conn, {'title': 'Lake Level is low', 'client_name': 'Rosewood Uptest', 'vendor': 'Wettech'}, 'test')
+            b = P.create_case(conn, {'title': 'Control box', 'client_name': 'Rosewood Uptest', 'vendor': 'Wettech'}, 'test')
+            conn.execute('UPDATE pump_cases SET jobber=? WHERE id=?', (json.dumps(
+                {'quote': {'id': 'Q-UP9245', 'number': '9245', 'status': 'approved', 'uri': 'https://j/q/9245'}}), a))
+            conn.commit()
+        finally:
+            conn.close()
+        self.extracts['rosewood-up.pdf'] = extraction('quote', 'WQ-77', client='Rosewood Uptest', subtotal=1202.79)
+        first = self.upload('rosewood-up.pdf', case_id=b)
+        did = first['doc_id']
+        conn = P._conn()
+        try:
+            conn.execute("UPDATE pump_docs SET case_id=?, jobber=?, file_path='/nonexistent/rosewood.docx' WHERE id=?",
+                         (b, json.dumps({'quote_id': 'Q-UP9244', 'quote_number': '9244'}), did))
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (b,))
+            conn.commit()
+        finally:
+            conn.close()
+        again = self.upload('rosewood-up.pdf', case_id=a)
+        self.assertEqual((again['doc_id'], again['case_id']), (did, a))
+        c = self.case(a)
+        self.assertEqual([d['id'] for d in c['docs']], [did])
+        self.assertEqual(c['docs'][0]['jobber']['quote_number'], '9245')
+        self.assertEqual(c['vendor_quote_number'], 'WQ-77')
+        self.assertEqual(c['jobber']['quote']['number'], '9245', 'its Jobber quote untouched')
+        r = self.c.get(f'/pumps/api/docs/{did}/file')
+        self.assertEqual(r.status_code, 200, 'the file opens again')
+        # The sync's hand-over: a removed item that gave up a wrong-client quote still hands its vendor quote over.
+        conn = P._conn()
+        try:
+            c2 = P.create_case(conn, {'title': 'Old item', 'client_name': 'Rosewood Uptest'}, 'test')
+            conn.execute("UPDATE pump_cases SET status='closed', jobber=? WHERE id=?", (json.dumps(
+                {'quote_gone': {'number': '9300', 'why': 'wrong client', 'replaced_by': '9301', 'on_case': a}}), c2))
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, case_id, web_uri) "
+                         "VALUES ('Q-UP9301', 'quote', '9301', 'Resent', 'awaiting_response', ?, '')", (a,))
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, file_name, case_id, jobber, created_at) "
+                         "VALUES ('quote', 'filed', 'Wettech', 'WQ-88', 'second.docx', ?, ?, '2026-11-02')",
+                         (c2, json.dumps({'quote_number': '9300'})))
+            P._move_wrong_client_docs(conn, 'Jobber sync')
+            self.assertEqual(conn.execute("SELECT case_id FROM pump_docs WHERE file_name='second.docx'").fetchone()[0], a)
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?, ?)", (a, c2))
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='Q-UP9301'")
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE file_name='second.docx' OR id=?", (did,))
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
