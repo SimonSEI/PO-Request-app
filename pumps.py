@@ -822,6 +822,12 @@ def init_db():
         c.execute('ALTER TABLE pump_jobber_items ADD COLUMN client_company INTEGER')
     except sqlite3.OperationalError:
         pass
+    try:
+        # A quote's work: 'vendor' (Wettech's, priced from their quote), 'ours' (our own crew's labor and parts),
+        # '' not checked yet (Nov 2026).
+        c.execute("ALTER TABLE pump_jobber_items ADD COLUMN work_by TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)''')
     init_dive_tables(c)
     init_todo_table(c)
@@ -4406,6 +4412,7 @@ def _sync_jobber(full=False, actor='system'):
                 quote_moved(conn, jid)
             linked = _link_jobber_items(conn)
             fix_wrong_client_quotes(conn)
+            drop_our_own_quotes(conn)
             status['errors'] += _refresh_linked_records(conn)
             _follow_invoices(conn)
             duplicate_jobber_invoices(conn)
@@ -4682,12 +4689,50 @@ def _quote_is_ours(it):
     return not beatrice_site(it.get('client_name'), it.get('property_label'), it.get('title'))
 
 
+_OUR_LABOR = re.compile(r'\blabou?r\b|\bcrew\b|\bman\s*hours?\b|\btechnician\b', re.I)
+
+
+def quote_work_by(conn, jid):
+    """Whose work a Jobber quote is (FSW #9243, Nov 2026: "Pump Suction Line Repair" was our own crew's - Oli,
+    Ramon and a helper, a LABOR CREW line and our parts - and got linked to the service call waiting on Wettech):
+    'vendor' when the app drafted it from a vendor quote, it names Wettech/Gulfshore, or it is one lump-sum line;
+    'ours' when it has a labor/crew line or several priced parts lines; '' when Jobber can't be read. Kept on the
+    synced quote, so Jobber is asked once."""
+    row = conn.execute('SELECT work_by FROM pump_jobber_items WHERE jobber_id=?', (jid,)).fetchone()
+    if row and row['work_by']:
+        return row['work_by']
+    if conn.execute("SELECT 1 FROM pump_docs WHERE kind='quote' AND jobber LIKE ?", (f'%{jid}%',)).fetchone():
+        by = 'vendor'
+    else:
+        lines = None
+        for fields in ('name description totalPrice', 'name description'):
+            try:
+                q = (jobber_gql('query($id: EncodedId!) { quote(id: $id) { lineItems(first: 30) { nodes { ' + fields +
+                                ' } } } }', {'id': jid}).get('quote') or {})
+                lines = ((q.get('lineItems') or {}).get('nodes')) or []
+                break
+            except JobberError:
+                continue
+        if lines is None:
+            return ''
+        text = ' '.join(f"{l.get('name') or ''} {l.get('description') or ''}" for l in lines)
+        priced = [l for l in lines if (l.get('totalPrice') or 0) > 0] if any('totalPrice' in l for l in lines) else lines
+        if _VENDOR_WORDS.search(text):
+            by = 'vendor'
+        elif _OUR_LABOR.search(text) or len(priced) > 1:
+            by = 'ours'
+        else:
+            by = 'vendor'
+    conn.execute('UPDATE pump_jobber_items SET work_by=? WHERE jobber_id=?', (by, jid))
+    return by
+
+
 def quote_candidates(conn, it, cases=None):
     """The open jobs a Jobber quote could be for (Nov 2026): at the same Jobber client AND property, opened on or
     before the quote was made, the work not billed yet, and with no quote of their own - or one that was archived
     or made for another client."""
     it = dict(it)
-    if not (it.get('client_id') and it.get('property_id')) or not _quote_is_ours(it):
+    if not (it.get('client_id') and it.get('property_id')) or not _quote_is_ours(it) or it.get('work_by') == 'ours':
         return []
     rows = cases if cases is not None else conn.execute("SELECT * FROM pump_cases WHERE status='open'").fetchall()
     out = []
@@ -4763,9 +4808,46 @@ def auto_link_quotes(conn, actor='Jobber sync'):
         hits = quote_candidates(conn, it, cases)
         if len(hits) != 1:
             continue
+        # Only the vendor's work goes on a pump job by itself: our own crew's quote never; unread, only suggested.
+        if quote_work_by(conn, it['jobber_id']) != 'vendor':
+            continue
         link_quote_to_case(conn, it, hits[0]['id'], actor, f"auto-linked: matched client + property ({_where(it)})")
         done.append((hits[0]['id'], it['number']))
         cases = conn.execute("SELECT * FROM pump_cases WHERE status='open'").fetchall()
+    return done
+
+
+def drop_our_own_quotes(conn, actor='Jobber sync'):
+    """A quote the sync linked by itself that turns out to be our own crew's work comes off the job, which goes
+    back to where it was (FSW #14657, Nov 2026: our #9243 on the service call waiting on Wettech's quote).
+    Returns [(case_id, quote number)]."""
+    done = []
+    for c in conn.execute("SELECT id, jobber, steps, job_status FROM pump_cases WHERE status='open' "
+                          "AND jobber LIKE '%quote%'").fetchall():
+        j = json.loads(c['jobber'] or '{}')
+        q = j.get('quote') or {}
+        if not q.get('id') or not conn.execute(
+                "SELECT 1 FROM pump_events WHERE case_id=? AND action='quote linked' AND detail LIKE ? "
+                "AND detail LIKE '%auto-linked%'", (c['id'], f"Jobber quote #{q.get('number')} %")).fetchone():
+            continue
+        if quote_work_by(conn, q['id']) != 'ours':
+            continue
+        j.pop('quote', None)
+        conn.execute('UPDATE pump_cases SET jobber=?, updated_at=? WHERE id=?', (json.dumps(j), _now_text(), c['id']))
+        conn.execute('UPDATE pump_jobber_items SET case_id=NULL, ignored=1 WHERE jobber_id=?', (q['id'],))
+        steps = json.loads(c['steps'] or '{}')
+        for k in ('client_quote', 'vendor_quote'):   # what the link ticked, nothing a person did
+            if (steps.get(k) or {}).get('by') == actor and (steps.get(k) or {}).get('at'):
+                _set_step(conn, c['id'], k, by=actor, na=False)
+        js = json.loads(c['job_status'] or '{}')
+        if js.get('kind') in ('quote_received', 'waiting_approval') and js.get('text') == f"#{q.get('number')}":
+            conn.execute('UPDATE pump_cases SET job_status=? WHERE id=?', (json.dumps(
+                {'kind': 'waiting_quote', 'label': JOB_STATUSES['waiting_quote'], 'text': '', 'on': '',
+                 'at': _now_text(), 'by': actor}), c['id']))
+        _refresh_case(conn, c['id'])
+        _event(conn, actor, 'quote unlinked', f"Jobber quote #{q.get('number')} is our own crew's work (labor and "
+                                              f"parts), not the vendor's - taken off this job", case_id=c['id'])
+        done.append((c['id'], q.get('number')))
     return done
 
 
@@ -4908,10 +4990,11 @@ def quote_suggestions(conn, case):
     for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' AND case_id IS NULL AND ignored=0 "
                            f"AND status IN ({','.join('?' * len(LIVE_QUOTE))}) ORDER BY created_at DESC",
                            LIVE_QUOTE).fetchall():
-        if (it['client_id'], it['property_id']) not in homes:
+        if (it['client_id'], it['property_id']) not in homes or it['work_by'] == 'ours':
             continue
         hits = quote_candidates(conn, it)
-        if len(hits) > 1 and any(h['id'] == case['id'] for h in hits):
+        # Several jobs match - or just this one, but whose work it is couldn't be read from Jobber.
+        if any(h['id'] == case['id'] for h in hits) and (len(hits) > 1 or it['work_by'] != 'vendor'):
             out.append({'jobber_id': it['jobber_id'], 'number': it['number'], 'title': it['title'],
                         'status': it['status'], 'total': it['total'], 'uri': it['web_uri'],
                         'others': [h['id'] for h in hits if h['id'] != case['id']]})

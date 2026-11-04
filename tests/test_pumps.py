@@ -1866,8 +1866,8 @@ class PumpsTest(unittest.TestCase):
         try:
             conn.execute("UPDATE pump_cases SET jobber_property_id='PHW' WHERE id=?", (cid,))
             conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, "
-                         "property_id, created_at, category, po_number) VALUES ('Q14600', 'quote', '14600', "
-                         "'Extra pump work', 'awaiting_response', 'CHW', 'PHW', '2026-10-07T12:00:00Z', 'pump', '')")
+                         "property_id, created_at, category, po_number, work_by) VALUES ('Q14600', 'quote', '14600', "
+                         "'Extra pump work', 'awaiting_response', 'CHW', 'PHW', '2026-10-07T12:00:00Z', 'pump', '', 'vendor')")
             P._link_jobber_items(conn)
             conn.commit()
         finally:
@@ -3553,6 +3553,71 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_our_own_crews_quote_is_not_linked_to_a_pump_job(self):
+        """Nov 4 2026, FSW #14657: our quote #9243 "Pump Suction Line Repair and Filter Inspection" - a LABOR CREW
+        HALF DAY line (Oli, Ramon and a helper) and our parts - was linked to the service call waiting on Wettech's
+        quote ("still picking up non pump quotes"). Our crew's quotes are never linked by themselves; one already
+        linked comes off and the job goes back to waiting on Wettech's quote. A lump-sum quote (Wettech's) still links."""
+        lines = {'Q-FSW9243': [{'name': 'Service Proposal Amount', 'description': 'Pull the broken 3" suction line',
+                                'totalPrice': 0},
+                               {'name': "3'' 45 Schedule 40", 'description': '3" 45 fittings', 'totalPrice': 140},
+                               {'name': 'LABOR CREW HALF DAY', 'description': 'Crew of 3 (Oli, Ramon and a helper)',
+                                'totalPrice': 1375}],
+                 'Q-FSW9301': [{'name': 'Service Proposal Amount', 'description': 'Replace the pump motor',
+                                'totalPrice': 2400}]}
+        saved = P.jobber_gql
+        P.jobber_gql = lambda q, v=None: {'quote': {'lineItems': {'nodes': lines[v['id']]}}}
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': 'Pump is not functioning properly', 'client_name': 'FSW Owntest',
+                                       'vendor': 'Wettech', 'opened_on': '2026-10-28'}, 'test')
+            P.service_call_steps(conn, cid, {'number': '14657', 'title': 'Pump service', 'created_at': '2026-10-28'}, 'test')
+            conn.execute("UPDATE pump_cases SET jobber_client_id='C-FSW', jobber_property_id='P-FSW' WHERE id=?", (cid,))
+            P._set_step(conn, cid, 'work_done', at='2026-10-30', by='test')
+            P.set_job_status(conn, cid, 'Simon', 'waiting_quote', 'went out today, will send a quote')
+            ins = ("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, property_id, "
+                   "property_label, total, created_at, updated_at, category, ignored) VALUES (?, 'quote', ?, ?, ?, 'C-FSW', "
+                   "'FLORIDA SOUTHWESTERN STATE COLLEGE', 'P-FSW', '8099 College Pkwy', ?, ?, ?, 'pump', 0)")
+            conn.execute(ins, ('Q-FSW9243', '9243', 'Pump Suction Line Repair and Filter Inspection', 'draft', 1904,
+                               '2026-11-02T16:32:34Z', '2026-11-03T13:19:44Z'))
+            self.assertNotIn(cid, [c for c, _ in P.auto_link_quotes(conn)])
+            self.assertEqual(conn.execute("SELECT work_by FROM pump_jobber_items WHERE jobber_id='Q-FSW9243'").fetchone()[0], 'ours')
+            conn.commit()
+            self.assertEqual(self.case(cid)['quote_suggestions'], [], 'not even suggested')
+            # As it went live: linked by the sync before this check - it comes off, the job waits on Wettech again.
+            conn.execute("UPDATE pump_jobber_items SET work_by='vendor' WHERE jobber_id='Q-FSW9243'")
+            P.link_quote_to_case(conn, conn.execute("SELECT * FROM pump_jobber_items WHERE jobber_id='Q-FSW9243'").fetchone(),
+                                 cid, 'Jobber sync', 'auto-linked: matched client + property (FSW)')
+            self.assertEqual(json.loads(conn.execute('SELECT job_status FROM pump_cases WHERE id=?', (cid,)).fetchone()[0])['kind'],
+                             'quote_received')
+            conn.execute("UPDATE pump_jobber_items SET work_by='' WHERE jobber_id='Q-FSW9243'")
+            self.assertEqual(P.drop_our_own_quotes(conn), [(cid, '9243')])
+            conn.commit()
+        finally:
+            conn.close()
+        c = self.case(cid)
+        self.assertNotIn('quote', c['jobber'])
+        self.assertEqual(c['stage'], 'vendor_quote')
+        self.assertEqual(c['job_status']['kind'], 'waiting_quote')
+        self.assertFalse((c['steps'].get('vendor_quote') or {}).get('at'))
+        self.assertTrue(any("our own crew's work" in e['detail'] for e in c['events']))
+        # Wettech's lump-sum quote still links by itself.
+        conn = P._conn()
+        try:
+            conn.execute(ins, ('Q-FSW9301', '9301', 'Proposal to replace the pump motor', 'draft', 2400,
+                               '2026-11-04T10:00:00Z', '2026-11-04T10:00:00Z'))
+            self.assertIn((cid, '9301'), P.auto_link_quotes(conn))
+            conn.commit()
+        finally:
+            conn.close()
+            P.jobber_gql = saved
+        self.assertEqual(self.case(cid)['jobber']['quote']['number'], '9301')
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+        conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id LIKE 'Q-FSW%'")
+        conn.commit()
+        conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
@@ -3761,8 +3826,8 @@ class PumpsTest(unittest.TestCase):
         conn = P._conn()
         try:
             ins = ("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, client_name, "
-                   "property_id, property_label, total, created_at, updated_at, web_uri, category, ignored, client_company) "
-                   "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pump',0,1)")
+                   "property_id, property_label, total, created_at, updated_at, web_uri, category, ignored, client_company, "
+                   "work_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pump',0,1,'vendor')")
             conn.execute(ins, ('J-RW14647', 'job', '14647', 'Lake Level is low Rosewood HOA', 'archived', 'one_off', RH,
                                'Rosewood HOA c/o Guardian Management Property', RHP, '1655 Windy Pines Drive, Naples',
                                0, '2026-10-28T14:33:12Z', '2026-11-02T16:48:09Z', 'https://j/work_orders/161453862'))
