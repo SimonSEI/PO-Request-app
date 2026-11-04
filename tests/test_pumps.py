@@ -3618,6 +3618,76 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_duplicate_vendor_bills_are_held_or_flagged(self):
+        """Nov 4 2026, the office's ideas: (1) a vendor bill whose vendor and number are already in the app is held
+        from Bills to pay until someone confirms it; (2) the same vendor, site, amount and date under another number
+        (a corrected bill resent) is a warning; (3) a second vendor bill on a Jobber invoice that has one is a warning."""
+        conn = P._conn()
+        try:
+            mk = lambda t: P.create_case(conn, {'title': t, 'client_name': 'Dupcheck Lakes', 'vendor': 'Wettech'}, 'test')
+            a, b, c, d = mk('Check valve'), mk('Check valve again'), mk('Check valve resent'), mk('Other work')
+            conn.commit()
+        finally:
+            conn.close()
+        self.extracts['dup-a.pdf'] = extraction('bill', 'DUP-29400', client='Dupcheck Lakes', subtotal=500)
+        self.upload('dup-a.pdf', case_id=a)
+        self.assertFalse({i['kind'] for i in self.case(a)['issues'] if not i['resolved_at']} &
+                         {'duplicate_bill', 'resent_bill', 'invoice_two_bills'}, 'the first bill is fine')
+        # (1) The same number again, uploaded straight onto another job: held.
+        self.extracts['dup-b.pdf'] = extraction('bill', 'DUP-29400', client='Dupcheck Lakes', subtotal=500)
+        self.upload('dup-b.pdf', case_id=b)
+        iss = [i for i in self.case(b)['issues'] if i['kind'] == 'duplicate_bill' and not i['resolved_at']]
+        self.assertEqual(len(iss), 1)
+        self.assertIn('bill #DUP-29400 is already in the app (job #%d' % a, iss[0]['message'])
+        conn = P._conn()
+        try:
+            rows = {x['case_id']: x for g in P.bills_to_pay(conn) for x in g['bills']}
+        finally:
+            conn.close()
+        self.assertFalse(rows[b]['ready'])
+        self.assertIn('possible duplicate', rows[b]['why'])
+        self.assertNotIn('possible duplicate', rows[a]['why'])
+        # Confirmed (the issue resolved): no longer held.
+        r = self.c.post(f"/pumps/api/issues/{iss[0]['id']}/resolve", json={'resolution': 'Two different visits'})
+        self.assertTrue(r.get_json()['success'], r.get_data(as_text=True))
+        conn = P._conn()
+        try:
+            rows = {x['case_id']: x for g in P.bills_to_pay(conn) for x in g['bills']}
+        finally:
+            conn.close()
+        self.assertNotIn('possible duplicate', rows[b]['why'])
+        # (2) Same site, amount and date, a new number: a warning, not a hold.
+        self.extracts['dup-c.pdf'] = extraction('bill', 'DUP-29455', client='Dupcheck Lakes', subtotal=500)
+        self.upload('dup-c.pdf', case_id=c)
+        kinds = [i['kind'] for i in self.case(c)['issues'] if not i['resolved_at']]
+        self.assertIn('resent_bill', kinds)
+        self.assertNotIn('duplicate_bill', kinds)
+        # (3) Two jobs, each with a bill, on one Jobber invoice.
+        self.extracts['dup-d.pdf'] = extraction('bill', 'DUP-30001', client='Other Place', subtotal=777)
+        self.upload('dup-d.pdf', case_id=d)
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                         "total, created_at, category, ignored) VALUES ('I-DUP1', 'invoice', '37500', 'Pump repair', "
+                         "'awaiting_payment', 'C-DUP', 'Dupcheck Lakes', 565, '2026-11-01', 'pump', 0)")
+            P._link_item(conn, 'I-DUP1', a, 'test')
+            self.assertFalse([i for i in conn.execute("SELECT kind FROM pump_issues WHERE case_id=? AND kind='invoice_two_bills'",
+                                                      (a,))], 'one bill on the invoice is fine')
+            conn.execute("UPDATE pump_jobber_items SET case_id=NULL WHERE jobber_id='I-DUP1'")
+            P._link_item(conn, 'I-DUP1', d, 'test')
+            conn.commit()
+        finally:
+            conn.close()
+        msg = [i['message'] for i in self.case(d)['issues'] if i['kind'] == 'invoice_two_bills' and not i['resolved_at']]
+        self.assertEqual(len(msg), 1)
+        self.assertIn('invoice #37500 already has a vendor bill (#DUP-29400', msg[0])
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?,?,?,?)", (a, b, c, d))
+        conn.execute("UPDATE pump_docs SET status='dismissed' WHERE doc_number LIKE 'DUP-%'")
+        conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='I-DUP1'")
+        conn.commit()
+        conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""

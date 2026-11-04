@@ -1519,6 +1519,70 @@ def open_issue(conn, case_id, kind, message, doc_id=None):
     return iid
 
 
+# Vendor bills (Nov 2026): a bill already in the app is held from Bills to pay until someone confirms it
+# (resolves the issue); a resent bill under a new number, or a second bill on one Jobber invoice, is a warning.
+DUP_HOLD_ISSUE, DUP_WARN_ISSUE, SHARED_INVOICE_ISSUE = 'duplicate_bill', 'resent_bill', 'invoice_two_bills'
+
+
+def check_bill_duplicates(conn, doc_id):
+    """A vendor bill just filed on a job, against every other bill in the app. Returns the issue kinds opened."""
+    d = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+    if not d or d['kind'] != 'bill' or not d['case_id'] or d['status'] == 'dismissed':
+        return []
+    opened, vendor = [], (d['vendor'] or '').lower()
+    amt = lambda r: r['total'] if r['total'] is not None else r['subtotal']
+    where = lambda r: (f" (job #{r['case_id']}" if r['case_id'] else ' (not on a job') + \
+        (f", {money_text(amt(r))}" if amt(r) is not None else '') + (f", dated {r['doc_date']}" if r['doc_date'] else '') + ')'
+    others = [r for r in conn.execute("SELECT * FROM pump_docs WHERE kind='bill' AND status != 'dismissed' AND id != ? "
+                                      "AND LOWER(COALESCE(vendor, ''))=?", (doc_id, vendor))]
+    key = _vendor_doc_key(d['doc_number'])
+    same_no = [r for r in others if key and _vendor_doc_key(r['doc_number']) == key]
+    if same_no:
+        r = same_no[0]
+        open_issue(conn, d['case_id'], DUP_HOLD_ISSUE,
+                   f"Possible duplicate: {d['vendor'] or 'the vendor'}'s bill #{d['doc_number']} is already in the app"
+                   f"{where(r)}. Held from Bills to pay until you confirm it isn't a duplicate (resolve this).",
+                   doc_id=doc_id)
+        opened.append(DUP_HOLD_ISSUE)
+    a = amt(d)
+    if a is not None and d['doc_date']:
+        names = [x for x in (d['client_name'], d['site']) if x]
+        resent = [r for r in others if r['id'] not in {x['id'] for x in same_no} and amt(r) is not None
+                  and abs(amt(r) - a) < 0.01 and r['doc_date'] == d['doc_date']
+                  and _vendor_doc_key(r['doc_number']) != key
+                  and (r['case_id'] == d['case_id'] or any(site_name_matches(x, y) or _same_account(x, y)
+                                                           for x in names for y in (r['client_name'], r['site']) if y))]
+        if resent:
+            r = resent[0]
+            open_issue(conn, d['case_id'], DUP_WARN_ISSUE,
+                       f"Resent bill? {d['vendor'] or 'The vendor'}'s bill #{d['doc_number']} has the same site, amount "
+                       f"({money_text(a)}) and date ({d['doc_date']}) as bill #{r['doc_number'] or '?'}{where(r)} - a "
+                       "corrected bill under a new number? Pay only one.", doc_id=doc_id)
+            opened.append(DUP_WARN_ISSUE)
+    if check_shared_invoice(conn, d['case_id']):
+        opened.append(SHARED_INVOICE_ISSUE)
+    return opened
+
+
+def check_shared_invoice(conn, case_id):
+    """A job with a vendor bill whose Jobber invoice is also another job's, and that job has a vendor bill too."""
+    row = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    inv = (json.loads((row['jobber'] if row else '') or '{}').get('invoice') or {})
+    if not inv.get('id') or not conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind='bill' AND status != "
+                                             "'dismissed'", (case_id,)).fetchone():
+        return False
+    for c in conn.execute("SELECT id, title, client_name FROM pump_cases WHERE id != ? AND status != 'cancelled' "
+                          "AND json_extract(jobber, '$.invoice.id')=?", (case_id, inv['id'])).fetchall():
+        b = conn.execute("SELECT doc_number FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                         "ORDER BY id DESC", (c['id'],)).fetchone()
+        if b:
+            msg = (f"Our Jobber invoice #{inv.get('number') or '?'} already has a vendor bill (#{b['doc_number'] or '?'}, "
+                   f"job #{c['id']} {c['title'] or c['client_name'] or ''}). Check this bill isn't a duplicate of it.")
+            open_issue(conn, case_id, SHARED_INVOICE_ISSUE, msg)
+            return True
+    return False
+
+
 def resolve_issues(conn, case_id, kind, actor, resolution):
     conn.execute('''UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=?
                     WHERE case_id=? AND kind=? AND resolved_at IS NULL''',
@@ -3283,6 +3347,7 @@ def _file_on_case(conn, doc, case_id, how, actor):
         if lead:
             conn.execute('UPDATE pump_cases SET parts_lead=? WHERE id=?', (lead, case_id))
     elif kind == 'bill':
+        check_bill_duplicates(conn, doc_id)
         other_bill = conn.execute("SELECT 1 FROM pump_docs WHERE case_id=? AND kind='bill' AND id != ? "
                                   "AND status != 'dismissed'", (case_id, doc_id)).fetchone()
         if other_bill and (case.get('vendor_bill_number') or '').strip() and doc.get('doc_number') and \
@@ -6540,6 +6605,7 @@ def link_jobber_invoice(case_id, number, actor='system'):
         _set_step(conn, case_id, 'invoice_drafted', at=_today().isoformat(), by=actor)
         _event(conn, actor, 'linked Jobber invoice', f"Invoice #{num} ({status or 'status unknown'}"
                f"{', $' + format(total, ',.2f') if total is not None else ''})", case_id=case_id)
+        check_shared_invoice(conn, case_id)
         client_name = (conn.execute('SELECT client_name FROM pump_cases WHERE id=?', (case_id,)).fetchone() or
                        {'client_name': ''})['client_name']
         conn.commit()
@@ -9702,6 +9768,12 @@ def bills_to_pay(conn):
             # OK'd by hand (Wild Blue, Oct 2026: billed through the monthly irrigation contract - no invoice to link).
             payable = True
             why = f"OK'd to pay now by {ok.get('by') or 'the office'} ({(ok.get('at') or '')[:10]}) - {why}"
+        dup = conn.execute('SELECT message FROM pump_issues WHERE case_id=? AND kind=? AND resolved_at IS NULL',
+                           (c['id'], DUP_HOLD_ISSUE)).fetchone()
+        if dup:
+            # The same vendor and bill number as one already in the app (Nov 2026): not paid until confirmed.
+            payable = False
+            why = 'held - possible duplicate bill: confirm it on the job (resolve the issue) - ' + why
         hold = _state_get(f"pay_hold:{c['id']}", conn=conn) or {}
         if hold:
             # Held by hand (Homewood Suites, Oct 2026: invoiced, but not OK to pay the vendor yet).
@@ -11401,6 +11473,8 @@ def _link_item(conn, jobber_id, case_id, actor):
                  "jobber_request_made=CASE WHEN COALESCE(jobber_request_made,'')='' THEN ? ELSE jobber_request_made END "
                  "WHERE id=?", (json.dumps(j), it['client_id'] or '', _jobber_ref_text(it), case_id))
     _event(conn, actor, 'linked Jobber', f"{it['kind']} #{it['number'] or ''} {it['title']}", case_id=case_id)
+    if it['kind'] == 'invoice':
+        check_shared_invoice(conn, case_id)
 
 
 
