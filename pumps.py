@@ -1519,8 +1519,9 @@ def open_issue(conn, case_id, kind, message, doc_id=None):
     return iid
 
 
-# Vendor bills (Nov 2026): a bill already in the app is held from Bills to pay until someone confirms it
-# (resolves the issue); a resent bill under a new number, or a second bill on one Jobber invoice, is a warning.
+# Vendor bills (Nov 2026): a bill already in the app - the same vendor and number, or the same vendor, site, date
+# and amount under another number - is held from Bills to pay until someone confirms it (resolves the issue), so
+# Christian never sees one bill twice. A second bill on one Jobber invoice is a warning.
 DUP_HOLD_ISSUE, DUP_WARN_ISSUE, SHARED_INVOICE_ISSUE = 'duplicate_bill', 'resent_bill', 'invoice_two_bills'
 
 
@@ -1557,7 +1558,8 @@ def check_bill_duplicates(conn, doc_id):
             open_issue(conn, d['case_id'], DUP_WARN_ISSUE,
                        f"Resent bill? {d['vendor'] or 'The vendor'}'s bill #{d['doc_number']} has the same site, amount "
                        f"({money_text(a)}) and date ({d['doc_date']}) as bill #{r['doc_number'] or '?'}{where(r)} - a "
-                       "corrected bill under a new number? Pay only one.", doc_id=doc_id)
+                       "corrected bill under a new number? Held from Bills to pay until you confirm it isn't a duplicate "
+                       "(resolve this).", doc_id=doc_id)
             opened.append(DUP_WARN_ISSUE)
     if check_shared_invoice(conn, d['case_id']):
         opened.append(SHARED_INVOICE_ISSUE)
@@ -9768,10 +9770,11 @@ def bills_to_pay(conn):
             # OK'd by hand (Wild Blue, Oct 2026: billed through the monthly irrigation contract - no invoice to link).
             payable = True
             why = f"OK'd to pay now by {ok.get('by') or 'the office'} ({(ok.get('at') or '')[:10]}) - {why}"
-        dup = conn.execute('SELECT message FROM pump_issues WHERE case_id=? AND kind=? AND resolved_at IS NULL',
-                           (c['id'], DUP_HOLD_ISSUE)).fetchone()
+        dup = conn.execute('SELECT message FROM pump_issues WHERE case_id=? AND kind IN (?, ?) AND resolved_at IS NULL',
+                           (c['id'], DUP_HOLD_ISSUE, DUP_WARN_ISSUE)).fetchone()
         if dup:
-            # The same vendor and bill number as one already in the app (Nov 2026): not paid until confirmed.
+            # A bill already in the app - same vendor and number, or same vendor, site, date and amount (Nov 2026):
+            # not paid, and not in Christian's email, until confirmed.
             payable = False
             why = 'held - possible duplicate bill: confirm it on the job (resolve the issue) - ' + why
         hold = _state_get(f"pay_hold:{c['id']}", conn=conn) or {}

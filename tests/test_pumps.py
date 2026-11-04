@@ -3619,9 +3619,9 @@ class PumpsTest(unittest.TestCase):
         conn.close()
 
     def test_duplicate_vendor_bills_are_held_or_flagged(self):
-        """Nov 4 2026, the office's ideas: (1) a vendor bill whose vendor and number are already in the app is held
-        from Bills to pay until someone confirms it; (2) the same vendor, site, amount and date under another number
-        (a corrected bill resent) is a warning; (3) a second vendor bill on a Jobber invoice that has one is a warning."""
+        """Nov 4 2026, the office's ideas: a vendor bill whose vendor and number - or vendor, site, date and amount -
+        match one already in the app is held from Bills to pay until someone confirms it, so Christian never sees one
+        bill twice; a second vendor bill on a Jobber invoice that has one is a warning."""
         conn = P._conn()
         try:
             mk = lambda t: P.create_case(conn, {'title': t, 'client_name': 'Dupcheck Lakes', 'vendor': 'Wettech'}, 'test')
@@ -3656,12 +3656,19 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertNotIn('possible duplicate', rows[b]['why'])
-        # (2) Same site, amount and date, a new number: a warning, not a hold.
+        # (2) Same site, amount and date, a new number: held too (Nov 4: "so Christian never sees the same bill twice").
         self.extracts['dup-c.pdf'] = extraction('bill', 'DUP-29455', client='Dupcheck Lakes', subtotal=500)
         self.upload('dup-c.pdf', case_id=c)
         kinds = [i['kind'] for i in self.case(c)['issues'] if not i['resolved_at']]
         self.assertIn('resent_bill', kinds)
         self.assertNotIn('duplicate_bill', kinds)
+        conn = P._conn()
+        try:
+            rows = {x['case_id']: x for g in P.bills_to_pay(conn) for x in g['bills']}
+            self.assertFalse(rows[c]['ready'])
+            self.assertIn('possible duplicate', rows[c]['why'])
+        finally:
+            conn.close()
         # (3) Two jobs, each with a bill, on one Jobber invoice.
         self.extracts['dup-d.pdf'] = extraction('bill', 'DUP-30001', client='Other Place', subtotal=777)
         self.upload('dup-d.pdf', case_id=d)
