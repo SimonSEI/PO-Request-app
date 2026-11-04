@@ -822,6 +822,11 @@ def init_db():
         c.execute('ALTER TABLE pump_jobber_items ADD COLUMN client_company INTEGER')
     except sqlite3.OperationalError:
         pass
+    for col in ('job_id', 'job_number'):   # an invoice's Jobber job (Nov 2026)
+        try:
+            c.execute(f"ALTER TABLE pump_jobber_items ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
     try:
         # A quote's work: 'vendor' (Wettech's, priced from their quote), 'ours' (our own crew's labor and parts),
         # '' not checked yet (Nov 2026).
@@ -1525,8 +1530,9 @@ def open_issue(conn, case_id, kind, message, doc_id=None):
 DUP_HOLD_ISSUE, DUP_WARN_ISSUE, SHARED_INVOICE_ISSUE = 'duplicate_bill', 'resent_bill', 'invoice_two_bills'
 
 
-def check_bill_duplicates(conn, doc_id):
-    """A vendor bill just filed on a job, against every other bill in the app. Returns the issue kinds opened."""
+def check_bill_duplicates(conn, doc_id, earlier_only=False):
+    """A vendor bill just filed on a job, against every other bill in the app (earlier_only: only the bills that came
+    in before it - the later copy is the duplicate). Returns the issue kinds opened."""
     d = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
     if not d or d['kind'] != 'bill' or not d['case_id'] or d['status'] == 'dismissed':
         return []
@@ -1535,7 +1541,8 @@ def check_bill_duplicates(conn, doc_id):
     where = lambda r: (f" (job #{r['case_id']}" if r['case_id'] else ' (not on a job') + \
         (f", {money_text(amt(r))}" if amt(r) is not None else '') + (f", dated {r['doc_date']}" if r['doc_date'] else '') + ')'
     others = [r for r in conn.execute("SELECT * FROM pump_docs WHERE kind='bill' AND status != 'dismissed' AND id != ? "
-                                      "AND LOWER(COALESCE(vendor, ''))=?", (doc_id, vendor))]
+                                      "AND LOWER(COALESCE(vendor, ''))=?", (doc_id, vendor))
+              if not earlier_only or r['id'] < doc_id]
     key = _vendor_doc_key(d['doc_number'])
     same_no = [r for r in others if key and _vendor_doc_key(r['doc_number']) == key]
     if same_no:
@@ -1564,6 +1571,47 @@ def check_bill_duplicates(conn, doc_id):
     if check_shared_invoice(conn, d['case_id']):
         opened.append(SHARED_INVOICE_ISSUE)
     return opened
+
+
+def backfill_bill_duplicates(actor='Pumps'):
+    """Once (the office, Nov 4 2026: "run the duplicate check once over bills filed before Nov 4"): every bill on a
+    job checked against the bills that came in before it. Not paid yet: held like a new one. Both copies already
+    paid: one to-do to check they weren't paid twice. Returns (bills held, pairs already paid)."""
+    conn = _conn()
+    try:
+        cur = conn.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('bill_dup_backfill_nov26', ?)",
+                           (json.dumps(_now_text()),))
+        if cur.rowcount != 1:
+            return 0, []
+        held, paid_twice = 0, []
+        for d in conn.execute("SELECT d.id, d.case_id, d.vendor, d.doc_number, c.vendor_paid_on FROM pump_docs d "
+                              "JOIN pump_cases c ON c.id=d.case_id WHERE d.kind='bill' AND d.status != 'dismissed' "
+                              "AND c.status != 'cancelled' ORDER BY d.id").fetchall():
+            if not d['vendor_paid_on']:
+                held += bool({DUP_HOLD_ISSUE, DUP_WARN_ISSUE} & set(check_bill_duplicates(conn, d['id'], earlier_only=True)))
+                continue
+            key = _vendor_doc_key(d['doc_number'])
+            if not key:
+                continue
+            for r in conn.execute("SELECT d.id, d.case_id, d.doc_number, c.vendor_paid_on FROM pump_docs d JOIN pump_cases c "
+                                  "ON c.id=d.case_id WHERE d.kind='bill' AND d.status != 'dismissed' AND d.id < ? "
+                                  "AND LOWER(COALESCE(d.vendor, ''))=LOWER(?) AND c.vendor_paid_on != '' "
+                                  "AND c.id != ?", (d['id'], d['vendor'] or '', d['case_id'])).fetchall():
+                if _vendor_doc_key(r['doc_number']) == key:
+                    paid_twice.append(f"{d['vendor'] or 'Vendor'} #{d['doc_number']}: job #{r['case_id']} (paid "
+                                      f"{r['vendor_paid_on']}) and job #{d['case_id']} (paid {d['vendor_paid_on']})")
+                    break
+        if paid_twice:
+            add_todo(conn, 'bills-paid-twice:nov26', f"Check {len(paid_twice)} vendor bill{'s' if len(paid_twice) > 1 else ''}"
+                                                     " weren't paid twice",
+                     'The same vendor and bill number is marked paid on two jobs: ' + '; '.join(paid_twice[:30]) + '.',
+                     {'label': 'Bills to pay', 'tab': 'paperwork'})
+        _event(conn, actor, 'duplicate check', f"Older bills checked: {held} held as possible duplicates"
+                                               + (f", {len(paid_twice)} possibly paid twice" if paid_twice else ''))
+        conn.commit()
+        return held, paid_twice
+    finally:
+        conn.close()
 
 
 def check_shared_invoice(conn, case_id):
@@ -4239,7 +4287,8 @@ SYNC_SPECS = {
               'completedAt', 'jobberWebUri', 'total', ('client', ['id', 'name', 'isCompany']), ('property', ['id', _ADDR])],
              'jobStatus'),
     'invoices': (['id', 'invoiceNumber', 'subject', 'invoiceStatus', 'createdAt', 'updatedAt', 'issuedDate',
-                  'jobberWebUri', ('amounts', ['total']), ('client', ['id', 'name'])], 'invoiceStatus'),
+                  'jobberWebUri', ('amounts', ['total']), ('client', ['id', 'name']),
+                  ('jobs(first: 1)', [('nodes', ['id', 'jobNumber'])])], 'invoiceStatus'),
 }
 OPEN_STATUSES = {
     'request': {'new', 'needs_approval', 'assessment_completed', 'overdue', 'today', 'upcoming', 'unscheduled'},
@@ -4328,6 +4377,9 @@ def _sync_search(conn_name, spec, status_field, term, full):
                 'completed_at': n.get('completedAt') or '', 'approved_at': '',
                 'web_uri': n.get('jobberWebUri') or '', 'category': cat,
                 'po_number': po_from_title(title)}
+            job = next(iter(((n.get('jobs') or {}).get('nodes') or [])), None) if isinstance(n.get('jobs'), dict) else None
+            if job:
+                seen[n['id']].update(job_id=job.get('id') or '', job_number=str(job.get('jobNumber') or ''))
         info = page.get('pageInfo') or {}
         pages += 1
         if not info.get('hasNextPage'):
@@ -4475,6 +4527,9 @@ def _sync_jobber(full=False, actor='system'):
                               it['total'], it['created_at'], it['updated_at'], it['start_at'], it['completed_at'],
                               it['approved_at'], it['web_uri'], it['category'], it['po_number'], now,
                               it['client_company']))
+                if it.get('job_id'):
+                    conn.execute('UPDATE pump_jobber_items SET job_id=?, job_number=? WHERE jobber_id=?',
+                                 (it['job_id'], it.get('job_number') or '', it['jobber_id']))
             for jid in moved:
                 quote_moved(conn, jid)
             linked = _link_jobber_items(conn)
@@ -4520,6 +4575,10 @@ def _sync_jobber(full=False, actor='system'):
                 link_billed_months()
             except Exception as e:
                 status['errors'].append(f'Months billed: {e}')
+            try:
+                backfill_bill_duplicates()
+            except Exception as e:
+                status['errors'].append(f'Bill duplicate check: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -7109,12 +7168,45 @@ def same_vendor_doc(conn, vendor, kind, number):
     return None
 
 
+_INVOICE_MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september',
+                   'october', 'november', 'december']
+
+
+def invoice_month(it):
+    """(year, month) an invoice bills for: the month its subject names ("October pump maintenance"), else the
+    month it was issued."""
+    when = (it.get('start_at') or it.get('created_at') or '')[:10]
+    try:
+        d = datetime.strptime(when, '%Y-%m-%d')
+    except ValueError:
+        return None
+    m = re.search(r'\b(' + '|'.join(_INVOICE_MONTHS) + r')\b', (it.get('title') or '').lower())
+    if not m:
+        return (d.year, d.month)
+    month = _INVOICE_MONTHS.index(m.group(1)) + 1
+    return (d.year - 1 if month > d.month + 6 else d.year, month)   # "December" billed in January
+
+
+def _invoice_jobs(conn, rows):
+    """Each invoice's Jobber job: from the sync, else from the job it's linked on in the app."""
+    by_case = {}
+    for c in conn.execute("SELECT jobber FROM pump_cases WHERE jobber LIKE '%invoice%' AND jobber LIKE '%\"job\"%'"):
+        j = json.loads(c['jobber'] or '{}')
+        if (j.get('invoice') or {}).get('id') and (j.get('job') or {}).get('id'):
+            by_case[j['invoice']['id']] = (j['job']['id'], str(j['job'].get('number') or ''))
+    for r in rows:
+        if not r.get('job_id') and r['jobber_id'] in by_case:
+            r['job_id'], r['job_number'] = by_case[r['jobber_id']]
+    return rows
+
+
 def duplicate_jobber_invoices(conn, days=30):
-    """Two Jobber invoices for the same client at the same amount within
-    `days` of each other: a to-do each, once."""
-    rows = [dict(r) for r in conn.execute(
+    """Our Jobber invoices billed twice: two on the same job for the same amount and month (Nov 2026), or - when
+    the job isn't known - two for the same client at the same amount within `days`. A to-do each, once. Two on one
+    job for different months are a monthly contract, not a duplicate."""
+    rows = _invoice_jobs(conn, [dict(r) for r in conn.execute(
         "SELECT * FROM pump_jobber_items WHERE kind='invoice' AND total IS NOT NULL AND client_id != '' "
-        "AND status NOT IN ('voided', 'bad_debt') ORDER BY client_id, created_at")]
+        "AND status NOT IN ('voided', 'bad_debt') ORDER BY client_id, created_at")])
     # One bill's stations, each invoiced on its own job (The Carlisle's Entrance and Exit), are not duplicates.
     together = []
     for r in conn.execute("SELECT jobber FROM pump_docs WHERE kind='bill' AND jobber LIKE '%site_invoices%'"):
@@ -7126,6 +7218,24 @@ def duplicate_jobber_invoices(conn, days=30):
             if b['client_id'] != a['client_id'] or abs((a['total'] or 0) - (b['total'] or 0)) > 0.5:
                 continue
             if any(a['jobber_id'] in t and b['jobber_id'] in t for t in together):
+                continue
+            if a.get('job_id') and a.get('job_id') == b.get('job_id'):
+                ma, mb = invoice_month(a), invoice_month(b)
+                if not ma or ma != mb:
+                    continue   # the same job, other months: a monthly contract
+                key = f"dup-invoice:{min(a['jobber_id'], b['jobber_id'])}:{max(a['jobber_id'], b['jobber_id'])}"
+                link = {'uri': a['web_uri'] or b['web_uri'] or '',
+                        'uris': [{'label': f"invoice #{r['number']}", 'uri': r['web_uri']} for r in (a, b) if r['web_uri']]}
+                label = date(ma[0], ma[1], 1).strftime('%B %Y')
+                add_todo(conn, key, f"Possible double billing: invoices #{a['number']} and #{b['number']} on job "
+                                    f"#{a.get('job_number') or '?'} ({a['client_name'] or 'same client'}, {money_text(a['total'])})",
+                         f"Two of our Jobber invoices on the same job, both for {label} at {money_text(a['total'])}. "
+                         "Check the client isn't billed twice - void one in Jobber if so.", link)
+                conn.execute('UPDATE pump_todos SET title=?, link=? WHERE key=? AND done_at IS NULL',
+                             (f"Possible double billing: invoices #{a['number']} and #{b['number']} on job "
+                              f"#{a.get('job_number') or '?'} ({a['client_name'] or 'same client'}, {money_text(a['total'])})",
+                              json.dumps(link), key))
+                found.append(key)
                 continue
             try:
                 gap = abs((datetime.strptime(b['created_at'][:10], '%Y-%m-%d') -

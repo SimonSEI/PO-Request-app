@@ -3695,6 +3695,79 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_older_bills_checked_once_for_duplicates(self):
+        """Nov 4 2026, the office: "run the duplicate check once over bills filed before Nov 4". The later copy of a
+        bill not paid yet is held; both copies already paid make one to-do; it runs once."""
+        conn = P._conn()
+        try:
+            conn.execute("DELETE FROM pump_state WHERE key='bill_dup_backfill_nov26'")
+            mk = lambda t: P.create_case(conn, {'title': t, 'client_name': 'Backfill Lakes', 'vendor': 'Wettech'}, 'test')
+            a, b, c, d = mk('First'), mk('Second copy'), mk('Paid once'), mk('Paid again')
+            ins = ("INSERT INTO pump_docs (kind, status, vendor, doc_number, doc_date, client_name, total, file_name, case_id, "
+                   "created_at) VALUES ('bill', 'filed', 'Wettech', ?, '2026-10-01', 'Backfill Lakes', ?, 'bf.pdf', ?, '2026-10-02')")
+            for num, amt, cid in (('BF-100', 400, a), ('BF-100', 400, b), ('BF-200', 900, c), ('BF-200', 900, d)):
+                conn.execute(ins, (num, amt, cid))
+            conn.execute("UPDATE pump_cases SET vendor_paid_on='2026-10-10' WHERE id IN (?, ?)", (c, d))
+            conn.execute("UPDATE pump_cases SET vendor_bill_number='BF-100', vendor_bill_total=400 WHERE id IN (?, ?)", (a, b))
+            conn.commit()
+        finally:
+            conn.close()
+        held, paid = P.backfill_bill_duplicates()
+        self.assertGreaterEqual(held, 1)
+        issues = lambda cid: {i['kind'] for i in self.case(cid)['issues'] if not i['resolved_at']}
+        self.assertIn('duplicate_bill', issues(b), 'the later copy is held')
+        self.assertNotIn('duplicate_bill', issues(a), 'the first one is fine')
+        self.assertTrue(any('#BF-200' in p for p in paid))
+        conn = P._conn()
+        try:
+            t = conn.execute("SELECT title FROM pump_todos WHERE key='bills-paid-twice:nov26'").fetchone()
+            self.assertIn("weren't paid twice", t['title'])
+            rows = {x['case_id']: x for g in P.bills_to_pay(conn) for x in g['bills']}
+            self.assertIn('possible duplicate', rows[b]['why'])
+        finally:
+            conn.close()
+        self.assertEqual(P.backfill_bill_duplicates(), (0, []), 'once only')
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?,?,?,?)", (a, b, c, d))
+        conn.execute("UPDATE pump_docs SET status='dismissed' WHERE file_name='bf.pdf'")
+        conn.execute("DELETE FROM pump_todos WHERE key='bills-paid-twice:nov26'")
+        conn.commit()
+        conn.close()
+
+    def test_our_invoices_billed_twice_on_one_job(self):
+        """Nov 4 2026, the office: a duplicate warning for our own Jobber invoices - two on the same job for the same
+        amount and month. The same job billed for two months (a monthly contract) is not one."""
+        conn = P._conn()
+        try:
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'dup-invoice:I-DB%'")
+            ins = ("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, total, "
+                   "created_at, start_at, category, ignored, job_id, job_number) VALUES (?, 'invoice', ?, ?, 'awaiting_payment', "
+                   "?, ?, ?, ?, ?, 'pump', 0, ?, ?)")
+            # Same job, both October, same amount: billed twice.
+            conn.execute(ins, ('I-DB1', '38001', 'October pump maintenance', 'C-DB', 'Doublebill HOA', 450,
+                               '2026-10-05', '2026-10-05', 'J-DB', '14800'))
+            conn.execute(ins, ('I-DB2', '38044', 'October pump maintenance', 'C-DB', 'Doublebill HOA', 450,
+                               '2026-10-20', '2026-10-20', 'J-DB', '14800'))
+            # A monthly contract: same job and amount, October then November, 26 days apart - fine.
+            conn.execute(ins, ('I-DB3', '38101', 'October maintenance', 'C-DB2', 'Monthly Lakes', 300,
+                               '2026-10-30', '2026-10-30', 'J-DB2', '14801'))
+            conn.execute(ins, ('I-DB4', '38150', 'November maintenance', 'C-DB2', 'Monthly Lakes', 300,
+                               '2026-11-25', '2026-11-25', 'J-DB2', '14801'))
+            found = P.duplicate_jobber_invoices(conn)
+            conn.commit()
+            self.assertIn('dup-invoice:I-DB1:I-DB2', found)
+            self.assertNotIn('dup-invoice:I-DB3:I-DB4', found)
+            t = conn.execute("SELECT title, detail FROM pump_todos WHERE key='dup-invoice:I-DB1:I-DB2'").fetchone()
+            self.assertEqual(t['title'], 'Possible double billing: invoices #38001 and #38044 on job #14800 '
+                                         '(Doublebill HOA, $450.00)')
+            self.assertIn('both for October 2026', t['detail'])
+            self.assertEqual(P.invoice_month({'title': 'December maintenance', 'start_at': '2027-01-04'}), (2026, 12))
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id LIKE 'I-DB%'")
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'dup-invoice:I-DB%'")
+            conn.commit()
+        finally:
+            conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
