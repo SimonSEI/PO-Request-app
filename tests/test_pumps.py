@@ -3884,6 +3884,68 @@ class PumpsTest(unittest.TestCase):
         conn.commit()
         conn.close()
 
+    def test_scada_renewal_invoiced_once_a_year(self):
+        """Nov 5 2026, the office: no second SCADA renewal invoice in a year for an account/site already invoiced
+        (paid or awaiting payment); and an approved SCADA quote's "convert" to-do names the invoice already made."""
+        conn = P._conn()
+        try:
+            ins = ("INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years, jobber_names, "
+                   "notes, updated_by, updated_at, quote) VALUES (?, '2026-11-01', 'Annual Subscription - SCADA', '$600.00', "
+                   "'Wettech', ?, ?, '', 'test', '2026-11-01', ?)")
+            cur = conn.execute(ins, ('Scadaonce Lakes - North', json.dumps({'2026': '37900'}), 'Scadaonce Lakes - North',
+                                     json.dumps({'id': 'Q-SC1', 'number': '9400', 'status': 'approved', 'year': '2026'})))
+            north = cur.lastrowid
+            cur = conn.execute(ins, ('Scadaonce Lakes - South', json.dumps({}), 'Scadaonce Lakes - South',
+                                     json.dumps({'id': 'Q-SC2', 'number': '9401', 'status': 'approved', 'year': '2026'})))
+            south = cur.lastrowid
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_name, total, "
+                         "created_at, category, ignored) VALUES ('I-SC1', 'invoice', '37900', 'SCADA Annual Subscription "
+                         "Renewal 2026-2027', 'awaiting_payment', 'Scadaonce Lakes - North', 600, '2026-11-02', 'scada', 0)")
+            conn.commit()
+        except Exception:
+            conn.close()
+            raise
+        try:
+            self._scada_once(conn, north, south)
+        finally:
+            conn.execute('DELETE FROM pump_scada_accounts WHERE id IN (?, ?)', (north, south))
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='I-SC1'")
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'scada-convert:%'")
+            conn.commit()
+            conn.close()
+
+    def _scada_once(self, conn, north, south):
+        if True:
+            cid = P.create_case(conn, {'title': 'SCADA renewal', 'client_name': 'Scadaonce Lakes - North'}, 'test')
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, client_name, total, file_name, case_id, "
+                         "created_at) VALUES ('bill', 'filed', 'Wettech', 'W-SC1', 'Scadaonce Lakes - North', 400, 'sc.pdf', ?, "
+                         "'2026-11-03')", (cid,))
+            did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            conn.commit()
+            lines = [{'name': 'SCADA', 'description': 'SCADA Annual Subscription Renewal 2026-2027', 'quantity': 1,
+                      'unit_price': 600}]
+            with self.assertRaises(ValueError) as e:
+                P.create_draft_invoice(did, 'C-SC', lines, 'SCADA renewal', force=True)
+            self.assertIn('already invoiced: #37900 (awaiting payment)', str(e.exception))
+            self.assertIsNone(P.scada_already_invoiced(conn, 'Scadaonce Lakes - South', lines[0]['description']),
+                              'the other site is not invoiced yet')
+            self.assertIsNone(P.scada_already_invoiced(conn, 'Scadaonce Lakes - North', 'Pump repair'), 'not SCADA')
+            P.scada_convert_todos()
+            t1 = conn.execute('SELECT title, detail FROM pump_todos WHERE key=?', (f'scada-convert:{north}:2026',)).fetchone()
+            t2 = conn.execute('SELECT title FROM pump_todos WHERE key=?', (f'scada-convert:{south}:2026',)).fetchone()
+            self.assertIn('already invoiced for 2026', t1['title'])
+            self.assertIn('#37900 (awaiting payment)', t1['detail'])
+            self.assertEqual(t2['title'], 'Convert SCADA quote #9401 to a job and invoice - Scadaonce Lakes - South')
+            conn.execute("UPDATE pump_scada_accounts SET quote=? WHERE id=?",
+                         (json.dumps({'id': 'Q-SC2', 'number': '9401', 'status': 'converted', 'year': '2026'}), south))
+            conn.commit()
+            P.scada_convert_todos()
+            self.assertIsNotNone(conn.execute('SELECT done_at FROM pump_todos WHERE key=?',
+                                              (f'scada-convert:{south}:2026',)).fetchone()[0])
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
+            conn.commit()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""

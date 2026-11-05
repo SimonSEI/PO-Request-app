@@ -4611,6 +4611,7 @@ def _sync_jobber(full=False, actor='system'):
                 status['errors'].append(f'Report-only bills: {e}')
             try:
                 refresh_scada_quotes()
+                scada_convert_todos()
             except Exception as e:
                 status['errors'].append(f'SCADA quotes: {e}')
             try:
@@ -7587,6 +7588,16 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
         if not client_id:
             raise ValueError('Choose the Jobber client first')
         items = _jobber_lines(line_items, 'invoice')
+        # One SCADA renewal invoice a year per account/site (Nov 2026): a second is refused, "draft anyway" or not.
+        text = ' '.join([subject or ''] + [f"{li.get('name') or ''} {li.get('description') or ''}" for li in line_items or []])
+        case_client = conn.execute('SELECT client_name FROM pump_cases WHERE id=?', (doc.get('case_id'),)).fetchone() \
+            if doc.get('case_id') else None
+        done = scada_already_invoiced(conn, (case_client['client_name'] if case_client else '') or doc.get('client_name'), text)
+        if done and not extra:
+            row, year, invs = done
+            raise ValueError(f"{row['client']}'s SCADA renewal for {year} is already invoiced: " +
+                             ', '.join(f"#{i['number']} ({i['status'].replace('_', ' ')})" for i in invs) +
+                             ' - a second invoice is not drafted.')
         if not force:
             dup = existing_jobber_record('invoice', client_id, items, ignore_ids=tuple(ignore_ids))
             if dup:
@@ -14195,6 +14206,42 @@ def record_scada_invoice(conn, inv):
     return 'recorded'
 
 
+def scada_year_invoices(conn, row, year):
+    """Our SCADA renewal invoices for one SCADA account (site) and renewal year: the one on the SCADA tab, and any
+    SCADA invoice the sync has for that client in that year. [{number, status, uri}] - drafts and voided left out."""
+    out, seen = [], set()
+    num = str((json.loads(row['years'] or '{}') if isinstance(row['years'], str) else (row['years'] or {})).get(year) or '').strip()
+    rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+    for it in conn.execute("SELECT number, status, web_uri, title, client_name, created_at, start_at FROM pump_jobber_items "
+                           "WHERE kind='invoice'"):
+        mine = it['number'] == num and num
+        # A synced SCADA invoice counts for the site the SCADA tab's own matching gives it - one site only (a client
+        # with several sites and an invoice that doesn't say which counts for none: the tab's number decides).
+        scada = re.search(r'\bscada\b', it['title'] or '', re.I) and \
+            scada_invoice_year(it['title'], (it['start_at'] or it['created_at'] or '')[:10]) == year and \
+            ((_scada_match(rows, it['client_name'] or '', it['title'] or '') or {}).get('id') == row['id'])
+        if (mine or scada) and (it['status'] or '') not in ('draft', 'voided', 'bad_debt') and it['number'] not in seen:
+            out.append({'number': it['number'], 'status': it['status'] or 'sent', 'uri': it['web_uri'] or ''})
+            seen.add(it['number'])
+    if re.fullmatch(r'#?\d{4,7}', num) and num.lstrip('#') not in seen:   # a note in the cell isn't an invoice
+        out.append({'number': num, 'status': 'issued', 'uri': ''})   # on the tab (only issued invoices are recorded)
+    return out
+
+
+def scada_already_invoiced(conn, client_name, text):
+    """(SCADA account row, year, its invoices) when `text` is a SCADA renewal for an account whose renewal year is
+    already invoiced (paid or awaiting payment), else None."""
+    if not is_scada_renewal(text):
+        return None
+    rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+    row = _scada_match(rows, client_name or '', text)
+    if not row:
+        return None
+    year = scada_invoice_year(text, _today().isoformat())
+    invs = scada_year_invoices(conn, row, year)
+    return (row, year, invs) if invs else None
+
+
 def _fmt_money(inv):
     total = (inv.get('amounts') or {}).get('total')
     return f'${float(total):,.2f}' if isinstance(total, (int, float)) else ''
@@ -16018,6 +16065,38 @@ def refresh_scada_quotes():
                 conn.commit()
             finally:
                 conn.close()
+
+
+def scada_convert_todos():
+    """An approved SCADA renewal quote: "Convert it to a job and invoice", naming any SCADA invoice the client
+    already has for that renewal year - so a second one isn't made (Nov 2026). Done once the quote is converted."""
+    conn = _conn()
+    try:
+        for r in [dict(x) for x in conn.execute("SELECT * FROM pump_scada_accounts WHERE COALESCE(quote, '') LIKE '%\"id\"%'")]:
+            q = json.loads(r['quote'] or '{}')
+            year = q.get('year') or ''
+            key = f"scada-convert:{r['id']}:{year}"
+            if q.get('status') != 'approved' or not year:
+                if q.get('status') in ('converted', 'archived', 'rejected'):
+                    conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                                 (_now_text(), 'Jobber sync', key))
+                continue
+            invs = scada_year_invoices(conn, r, year)
+            if invs:
+                title = f"SCADA quote #{q.get('number')} approved - {r['client']} is already invoiced for {year}"
+                detail = ('Already invoiced for this renewal year: ' +
+                          ', '.join(f"#{i['number']} ({i['status'].replace('_', ' ')})" for i in invs) +
+                          '. Check before converting the quote - do not invoice it a second time.')
+            else:
+                title = f"Convert SCADA quote #{q.get('number')} to a job and invoice - {r['client']}"
+                detail = f"Approved. No SCADA invoice for {year} yet for {r['client']} - convert it in Jobber and invoice it."
+            add_todo(conn, key, title, detail, {'scada_id': r['id'], 'uri': q.get('uri') or '',
+                                                'uris': [{'label': f"invoice #{i['number']}", 'uri': i['uri']}
+                                                         for i in invs if i['uri']]})
+            conn.execute('UPDATE pump_todos SET title=?, detail=? WHERE key=? AND done_at IS NULL', (title, detail, key))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def existing_scada_quote(r):
