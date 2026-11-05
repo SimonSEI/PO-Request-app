@@ -3822,6 +3822,68 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def test_service_calls_are_followed_from_jobber_requests(self):
+        """Nov 5 2026, the office: "for service calls we're going to start tracking them via requests on Jobber, no
+        longer jobs". New > A service call picks a Jobber request (no number - by client, title or address); a request
+        titled as a service call ("- SC -") is one when tracked; a request can be linked to an item as its service call."""
+        conn = P._conn()
+        try:
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                         "property_id, property_label, created_at, updated_at, web_uri, category, ignored) VALUES "
+                         "('R-SC1', 'request', '', 'Pump not running', 'unscheduled', 'C-SCR', 'Reqcall Lakes HOA', 'P-SCR', "
+                         "'100 Reqcall Way, Naples', '2026-11-05 09:00:00', '2026-11-05 09:00:00', 'https://j/work_requests/1', "
+                         "'pump', 0)")
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, "
+                         "property_id, property_label, created_at, updated_at, web_uri, category, ignored) VALUES "
+                         "('R-SC2', 'request', '', 'REQCALL TWO - SC - PUMP', 'assessment_completed', 'C-SCR2', 'Reqcall Two', "
+                         "'P-SCR2', '2 Reqcall Way', '2026-11-04 09:00:00', '2026-11-05 10:00:00', '', 'pump', 0)")
+            conn.commit()
+        finally:
+            conn.close()
+        found = self.c.get('/pumps/api/jobber/requests?q=Reqcall Lakes').get_json()['requests']
+        self.assertEqual([r['jobber_id'] for r in found], ['R-SC1'])
+        self.assertEqual(found[0]['site'], '100 Reqcall Way, Naples')
+        r = self.c.post('/pumps/api/service_call', json={'jobber_id': 'R-SC1'}).get_json()
+        self.assertTrue(r['success'], r)
+        c = self.case(r['case_id'])
+        self.assertEqual(c['jobber']['request']['id'], 'R-SC1')
+        for k in ('vendor_quote', 'client_quote'):
+            self.assertTrue(c['steps'][k].get('na'), k)
+        self.assertTrue(c['steps']['client_approved']['at'])
+        self.assertTrue(any(e['action'] == 'service call' and 'Jobber request' in e['detail'] for e in c['events']))
+        again = self.c.post('/pumps/api/service_call', json={'jobber_id': 'R-SC1'}).get_json()
+        self.assertTrue(again.get('already'))
+        # Tracked from the list: "- SC -" in the title makes it a service call; Jobber shows the visit done, but
+        # Work done waits for Wettech's report or bill.
+        t = self.c.post('/pumps/api/jobber/items/R-SC2', json={'action': 'track'}).get_json()
+        c2 = self.case(t['case_id'])
+        self.assertTrue(c2['steps']['vendor_quote'].get('na'))
+        self.assertFalse((c2['steps'].get('work_done') or {}).get('at'))
+        self.assertTrue(P.is_service_call_title('DAVID HANNUM - SC - LIGHTING'))
+        self.assertFalse(P.is_service_call_title('SCADA quarterly'))
+        # A request not synced yet comes from Jobber, and links to an existing item as its service call.
+        saved = (P.jobber_gql, P.jobber_status)
+        P.jobber_status = lambda: {'connected': True}
+        P.jobber_gql = lambda q, v=None: {'request': {'id': 'R-SC3', 'title': 'Lake pump down', 'requestStatus': 'new',
+                                                      'createdAt': '2026-11-05T12:00:00Z', 'jobberWebUri': 'https://j/r/3',
+                                                      'client': {'id': 'C-SC3', 'name': 'Third Lakes'},
+                                                      'property': {'id': 'P-SC3', 'address': {'street1': '3 Third St'}}}}
+        try:
+            j = self.c.post('/pumps/api/cases', json={'title': 'Pump down', 'client_name': 'Third Lakes'}).get_json()
+            cid = j.get('case_id') or j['case']['id']
+            r = self.c.post(f'/pumps/api/cases/{cid}/jobber_request', json={'jobber_id': 'R-SC3', 'service_call': True}).get_json()
+            self.assertTrue(r['success'], r)
+        finally:
+            P.jobber_gql, P.jobber_status = saved
+        c3 = self.case(cid)
+        self.assertEqual(c3['jobber']['request']['id'], 'R-SC3')
+        self.assertTrue(c3['steps']['vendor_quote'].get('na'))
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?,?,?)", (c['id'], c2['id'], cid))
+        conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id LIKE 'R-SC%'")
+        conn.commit()
+        conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
