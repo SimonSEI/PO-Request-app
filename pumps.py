@@ -9335,6 +9335,109 @@ def search_jobber_jobs(q, limit=25):
     return (exact + rest)[:limit]
 
 
+_REQ_SPEC = ['id', 'title', 'requestStatus', 'createdAt', 'updatedAt', 'jobberWebUri', ('client', ['id', 'name']),
+             ('property', ['id', _ADDR])]
+
+
+def _request_item(n):
+    return {'jobber_id': n['id'], 'kind': 'request', 'number': '', 'title': n.get('title') or '',
+            'status': (n.get('requestStatus') or '').lower(), 'job_type': '',
+            'client_id': (n.get('client') or {}).get('id') or '', 'client_name': (n.get('client') or {}).get('name') or '',
+            'property_id': (n.get('property') or {}).get('id') or '', 'property_label': _prop_label(n.get('property')),
+            'total': None, 'created_at': (n.get('createdAt') or '')[:19].replace('T', ' '),
+            'updated_at': (n.get('updatedAt') or '')[:19].replace('T', ' ') or _now_text(), 'start_at': '',
+            'completed_at': '', 'web_uri': n.get('jobberWebUri') or '', 'category': 'pump',
+            'po_number': po_from_title(n.get('title') or '')}
+
+
+def search_jobber_requests(q='', limit=25):
+    """Jobber requests to pick a service call from (Nov 2026: service calls are tracked as requests now): by client
+    name, title or address - the synced ones plus Jobber's own search; no q: the newest. Newest first."""
+    q = (q or '').strip()
+    found = {}
+    conn = _conn()
+    try:
+        like = f'%{q}%'
+        for r in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='request' AND (?='' OR client_name LIKE ? "
+                              "OR title LIKE ? OR property_label LIKE ?) ORDER BY created_at DESC LIMIT ?",
+                              (q, like, like, like, limit)):
+            found[r['jobber_id']] = dict(r)
+    finally:
+        conn.close()
+    if jobber_status()['connected']:
+        def make(fields):
+            args = 'searchTerm: $q, ' if q else ''
+            return (f'query{"($q: String!)" if q else ""} {{ requests({args}first: {limit}) {{ nodes {{ {fields} }} }} }}')
+        try:
+            data, _ = _gql_tolerant(make, list(_REQ_SPEC), {'q': q} if q else {}, required=('id',))
+            for n in (data.get('requests') or {}).get('nodes') or []:
+                found.setdefault(n['id'], _request_item(n))
+        except JobberError:
+            pass
+    rows = sorted(found.values(), key=lambda r: r.get('created_at') or '', reverse=True)[:limit]
+    return [{'jobber_id': r['jobber_id'], 'title': r.get('title') or '', 'client_name': r.get('client_name') or '',
+             'site': r.get('property_label') or '', 'status': r.get('status') or '', 'date': (r.get('created_at') or '')[:10],
+             'uri': r.get('web_uri') or '', 'case_id': r.get('case_id')} for r in rows]
+
+
+def find_request(jobber_id):
+    """A Jobber request by its id: from the sync, else from Jobber (then kept in the sync's list)."""
+    conn = _conn()
+    try:
+        row = conn.execute("SELECT * FROM pump_jobber_items WHERE kind='request' AND jobber_id=?", (jobber_id,)).fetchone()
+        if row:
+            return dict(row)
+        def make(fields):
+            return f'query($id: EncodedId!) {{ request(id: $id) {{ {fields} }} }}'
+        data, _ = _gql_tolerant(make, list(_REQ_SPEC), {'id': jobber_id}, required=('id',))
+        n = data.get('request')
+        if not n:
+            return None
+        it = _request_item(n)
+        conn.execute('INSERT OR IGNORE INTO pump_jobber_items (jobber_id, kind, number, title, status, job_type, client_id, '
+                     'client_name, property_id, property_label, total, created_at, updated_at, start_at, completed_at, '
+                     'web_uri, category, po_number, synced_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                     (it['jobber_id'], 'request', '', it['title'], it['status'], '', it['client_id'], it['client_name'],
+                      it['property_id'], it['property_label'], None, it['created_at'], it['updated_at'], '', '',
+                      it['web_uri'], 'pump', it['po_number'], _now_text()))
+        conn.commit()
+        return dict(conn.execute('SELECT * FROM pump_jobber_items WHERE jobber_id=?', (jobber_id,)).fetchone())
+    finally:
+        conn.close()
+
+
+@api('/jobber/requests')
+def h_jobber_requests(actor):
+    """?q= a client name, title or address - Jobber requests to pick a service call from; no q: the newest."""
+    q = (request.args.get('q') or '').strip()
+    return {'requests': search_jobber_requests(q), 'recent': not q}
+
+
+@api('/cases/<int:case_id>/jobber_request', methods=('POST',))
+def h_link_jobber_request(actor, case_id):
+    """Body: {"jobber_id", "service_call": bool} - tie a Jobber request to this item; a service call is the start
+    of the work (no quote)."""
+    if actor == BOT:
+        return _office_only(actor, 'Linking a Jobber request')
+    d = _json()
+    it = find_request(str(d.get('jobber_id') or ''))
+    if not it:
+        raise ValueError('Jobber has no such request')
+    conn = _conn()
+    try:
+        if not conn.execute('SELECT 1 FROM pump_cases WHERE id=?', (case_id,)).fetchone():
+            return {'success': False, 'error': 'Not found'}, 404
+        _link_item(conn, it['jobber_id'], case_id, actor)
+        conn.execute("UPDATE pump_cases SET jobber_property_id=COALESCE(NULLIF(jobber_property_id, ''), ?) WHERE id=?",
+                     (it.get('property_id') or '', case_id))
+        if d.get('service_call'):
+            service_call_steps(conn, case_id, it, actor)
+        conn.commit()
+        return {'request': {'title': it['title'], 'client_name': it['client_name'], 'uri': it.get('web_uri') or ''}}
+    finally:
+        conn.close()
+
+
 @api('/jobber/jobs')
 def h_jobber_jobs(actor):
     """?q= a job number or client name - recent Jobber jobs to pick from; no q: the newest created."""
@@ -9344,13 +9447,20 @@ def h_jobber_jobs(actor):
 
 @api('/service_call', methods=('POST',))
 def h_service_call(actor):
-    """Body: {"number": Jobber job #} - follow a service call booked in Jobber: an item
-    that starts at the work (no quote), linked to the job."""
+    """Body: {"jobber_id": a Jobber request} (or the old {"number": Jobber job #}) - follow a service call
+    booked in Jobber: an item that starts at the work (no quote), linked to the request (Nov 2026: service calls
+    are tracked as requests, no longer jobs)."""
     if actor == BOT:
         return _office_only(actor, 'Adding a service call')
-    it = find_job_by_number(_json().get('number'))
-    if not it:
-        raise ValueError("Jobber has no job with that number")
+    d = _json()
+    if d.get('jobber_id'):
+        it = find_request(str(d['jobber_id']))
+        if not it:
+            raise ValueError('Jobber has no such request')
+    else:
+        it = find_job_by_number(d.get('number'))
+        if not it:
+            raise ValueError("Jobber has no job with that number")
     conn = _conn()
     try:
         if it.get('case_id') and conn.execute("SELECT 1 FROM pump_cases WHERE id=? AND status != 'cancelled'",
@@ -11475,6 +11585,12 @@ def account_for_jobber(conn, it):
 
 
 _SERVICE_CALL = re.compile(r'\bservice\s*call\b', re.I)
+# The office's shorthand in Jobber titles: "DAVID HANNUM - SC - LIGHTING" (Nov 2026).
+_SC_TITLE = re.compile(r'(?:^|[\s-])SC(?:[\s-]|$)')
+
+
+def is_service_call_title(title):
+    return bool(_SERVICE_CALL.search(title or '') or _SC_TITLE.search(title or ''))
 
 
 def service_call_steps(conn, cid, it, actor):
@@ -11488,8 +11604,8 @@ def service_call_steps(conn, cid, it, actor):
     booked = (it.get('created_at') or '')[:10] or _today().isoformat()
     if not (steps.get('client_approved') or {}).get('at'):
         _set_step(conn, cid, 'client_approved', at=booked, by=actor)
-    _event(conn, actor, 'service call', f"Jobber job #{it.get('number') or ''} {it.get('title') or ''} - the start of "
-                                        'the work, no quote', case_id=cid)
+    what = f"Jobber job #{it.get('number') or ''}" if it.get('kind', 'job') == 'job' else 'Jobber request'
+    _event(conn, actor, 'service call', f"{what} {it.get('title') or ''} - the start of the work, no quote", case_id=cid)
 
 
 def find_job_by_number(number):
@@ -11551,10 +11667,17 @@ def track_jobber_item(conn, it, actor, service_call=None):
     if it['kind'] == 'quote' and it['status'] == 'approved':
         _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
         _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
-    if it['kind'] == 'job' and (service_call or (service_call is None and _SERVICE_CALL.search(it['title'] or ''))):
+    if it['kind'] in ('job', 'request') and (service_call or (service_call is None and is_service_call_title(it['title']))):
+        # Service calls are followed from their Jobber request now, no longer a job (the office, Nov 5 2026).
         service_call_steps(conn, cid, dict(it), actor)
         vendor = conn.execute('SELECT vendor FROM pump_cases WHERE id=?', (cid,)).fetchone()['vendor']
-        if (it['completed_at'] or it['status'] == 'requires_invoicing') and not vendor:
+        if it['kind'] == 'request':
+            if it['status'] in ('assessment_completed', 'completed') and vendor:
+                _event(conn, actor, 'Jobber shows the visit done',
+                       f'Work done waits for {vendor}\'s report or bill (or tick it here)', case_id=cid)
+            elif it['status'] in ('assessment_completed', 'completed'):
+                _set_step(conn, cid, 'work_done', at=(it['updated_at'] or '')[:10] or None, by=actor)
+        elif (it['completed_at'] or it['status'] == 'requires_invoicing') and not vendor:
             _set_step(conn, cid, 'work_done', at=(it['completed_at'] or it['updated_at'] or '')[:10] or None, by=actor)
         elif it['completed_at'] or it['status'] == 'requires_invoicing':
             # Jobber's job being complete isn't the vendor's visit (Rosewood #14647, Oct 2026: completed in

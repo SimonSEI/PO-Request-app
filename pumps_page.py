@@ -1040,7 +1040,7 @@ async function pmMatch(docId, action){
 function renderCase(){
   const c = curCase, v = c.vendor || 'Wettech';
   const J = c.jobber || {};
-  const jl = ['request','job'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">Jobber ${k} #${esc(J[k].number || '')} ↗</a>`).join(' ');
+  const jl = ['request','job'].filter(k => J[k]).map(k => `<a href="${esc(J[k].uri || '#')}" target="_blank" rel="noopener" class="chip b">Jobber ${k}${J[k].number ? ' #' + esc(J[k].number) : ''} ↗</a>`).join(' ');
   const docs = (c.docs || []).map(d => `<div class="d">${kindChip(d.kind)} <b>${esc(d.file_name)}</b>
       <span class="note">${d.doc_number ? '#' + esc(d.doc_number) + ' · ' : ''}${d.total != null ? money(d.total) : ''} ${esc(d.doc_date)}</span>
       <span style="flex:1"></span>
@@ -1074,7 +1074,7 @@ function renderCase(){
       ${c.chase && c.chase.parts_wait && !c.chase.last_at ? `<button class="btn" onclick="quoteSent(${c.id})">📤 Approved quote sent to ${esc(c.chase.who || c.vendor || 'the vendor')}</button>` : ''}
       ${c.stage === 'vendor_quote' && !((c.steps || {}).assessment && !c.steps.assessment.na) && c.flow !== 'service_followup' ? `<button class="btn" onclick="needsVisit()">🔍 ${esc(v)} needs to visit first</button>` : ''}
       ${c.status === 'open' && (c.steps || {}).vendor_quote && c.steps.vendor_quote.na && c.flow !== 'service_followup' ? `<button class="btn" title="The service call is done and ${esc(v)} has to quote more work - the job waits on their quote, then the client's approval, then the return visit" onclick="needsQuote(${c.id})">🧾 Needs quote / follow-up work</button>` : ''}
-      <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job (service call)'}</option>${J.invoice || c.sei_invoice_number ? `<option value="unlink_invoice">Unlink invoice #${esc((J.invoice || {}).number || c.sei_invoice_number)} (wrong one)</option>` : ''}</select>
+      <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="request">${J.request ? 'A different Jobber request' : 'A Jobber request (service call)'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job'}</option>${J.invoice || c.sei_invoice_number ? `<option value="unlink_invoice">Unlink invoice #${esc((J.invoice || {}).number || c.sei_invoice_number)} (wrong one)</option>` : ''}</select>
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
       ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : c.status === 'cancelled' ? `<button class="btn p" onclick="caseRestore(${c.id})">↺ Restore</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
@@ -1398,10 +1398,42 @@ async function jobPickerSearch(){
   box.innerHTML = (j.recent && window._jobList.length ? '<div class="note" style="margin-bottom:4px">Most recently created - newest first</div>' : '') + (window._jobList.length ? window._jobList.map((x, i) => `<div class="row" style="cursor:pointer" onclick="window._jobPick(window._jobList[${i}])"><div class="main"><div class="tt">#${esc(x.number)} · ${esc(x.client_name)}</div><div class="sub">${esc(x.title)}${x.date ? ' · ' + esc(niceDay(x.date)) : ''}${x.status ? ' · ' + esc(x.status.replace(/_/g, ' ')) : ''}${x.case_id ? ' · <b>already followed here</b>' : ''}${x.uri ? ` · <a href="${esc(x.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</div></div></div>`).join('')
     : '<div class="note">No Jobber job matches.</div>');
 }
-// A service call booked in Jobber: followed from its job - the start of the work, no quote.
+// Service calls are Jobber requests now, no longer jobs (Nov 2026): picked by client, title or address.
+function requestPicker(title, onPick, start){
+  openModal(title, `
+    <div class="note">Type the client's name, the request's title or the address - their Jobber requests show here; click the one.</div>
+    <div class="toolbar" style="margin:6px 0"><input type="text" id="rpQ" value="${esc(start || '')}" placeholder="e.g. Rosewood or Windy Pines" style="flex:1" oninput="if (!this.value.trim()) { clearTimeout(window._lsT); requestPickerSearch(); } else liveSearch(requestPickerSearch)" onkeydown="if(event.key==='Enter'){event.preventDefault();clearTimeout(window._lsT);requestPickerSearch()}"></div>
+    <div id="rpList"></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button>`);
+  window._reqPick = onPick;
+  document.getElementById('rpQ').focus(); requestPickerSearch();
+}
+async function requestPickerSearch(){
+  const q = (document.getElementById('rpQ') || {}).value?.trim() || '';
+  const box = document.getElementById('rpList');
+  if (q.length === 1) return;
+  box.innerHTML = `<div class="note">${q ? 'Searching Jobber…' : 'Loading the newest Jobber requests…'}</div>`;
+  const j = await api('/jobber/requests?q=' + encodeURIComponent(q));
+  if (((document.getElementById('rpQ') || {}).value || '').trim() !== q) return;   // still typing
+  if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  window._reqList = j.requests || [];
+  box.innerHTML = (j.recent && window._reqList.length ? '<div class="note" style="margin-bottom:4px">Most recently made - newest first</div>' : '') + (window._reqList.length ? window._reqList.map((x, i) => `<div class="row" style="cursor:pointer" onclick="window._reqPick(window._reqList[${i}])"><div class="main"><div class="tt">${esc(x.client_name || 'Request')}${x.title ? ' · ' + esc(x.title) : ''}</div><div class="sub">${x.site ? esc(x.site) + ' · ' : ''}${x.date ? esc(niceDay(x.date)) : ''}${x.status ? ' · ' + esc(x.status.replace(/_/g, ' ')) : ''}${x.case_id ? ' · <b>already followed here</b>' : ''}${x.uri ? ` · <a href="${esc(x.uri)}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ↗</a>` : ''}</div></div></div>`).join('')
+    : '<div class="note">No Jobber request matches.</div>');
+}
+function linkRequest(id){
+  requestPicker('Link a Jobber request to this item', async x => {
+    const sc = confirm('Is it a service call that starts the work?\n\nOK = yes: no quote needed.\nCancel = just link the request.');
+    const j = await api('/cases/' + id + '/jobber_request', {method:'POST', body:{jobber_id: x.jobber_id, service_call: sc}});
+    if (!j.success) { toast(j.error, true); return; }
+    closeModal();
+    toast(`Linked the Jobber request${sc ? ' - a service call, no quote' : ''}.`);
+    openCase(id); loadToday();
+  }, (curCase && curCase.id === id && curCase.client_name) || '');
+}
+// A service call booked in Jobber: followed from its request - the start of the work, no quote.
 function addServiceCall(){
-  jobPicker('Follow a service call', async x => {
-    const j = await api('/service_call', {method:'POST', body:{number: x.number}});
+  requestPicker('Follow a service call (its Jobber request)', async x => {
+    const j = await api('/service_call', {method:'POST', body:{jobber_id: x.jobber_id}});
     if (!j.success) { toast(j.error, true); return; }
     closeModal();
     toast(j.already ? 'Already followed here - opening it.' : 'Service call followed - it starts at the work, no quote.');
@@ -1599,7 +1631,7 @@ async function linkSuggested(id, jid, num){
   if (!j.success) { toast(j.error, true); return; }
   curCase = j.case; renderCase(); toast('Linked quote #' + num); loadToday(); if (curTab === 'jobs') loadJobs();
 }
-function linkMenu(id, sel){ const v = sel.value; sel.value = ''; if (v === 'quote') linkQuote(id); else if (v === 'invoice') linkInvoice(id); else if (v === 'job') linkJob(id); else if (v === 'unlink_invoice') unlinkInvoice(id); }
+function linkMenu(id, sel){ const v = sel.value; sel.value = ''; if (v === 'quote') linkQuote(id); else if (v === 'invoice') linkInvoice(id); else if (v === 'job') linkJob(id); else if (v === 'request') linkRequest(id); else if (v === 'unlink_invoice') unlinkInvoice(id); }
 // A Jobber invoice linked by mistake taken off the job - nothing changes in Jobber.
 async function unlinkInvoice(id){
   if (!confirm('Take this invoice off the job? Nothing changes in Jobber - the bill goes back to Draft invoice.')) return;
@@ -2627,7 +2659,7 @@ async function gateCodes(btn){
 function newMenu(){
   openModal('New', `<div style="display:grid;gap:10px">
     <button class="btn" style="justify-content:flex-start;padding:14px;text-align:left" onclick="closeModal();newCase()"><div><b>A job</b><div class="note">Pump work to follow from the vendor's quote - add the details or a PO</div></div></button>
-    <button class="btn" style="justify-content:flex-start;padding:14px;text-align:left" onclick="closeModal();addServiceCall()"><div><b>A service call</b><div class="note">Booked in Jobber - the start of the work, no quote; waits for Wettech to schedule it</div></div></button></div>`,
+    <button class="btn" style="justify-content:flex-start;padding:14px;text-align:left" onclick="closeModal();addServiceCall()"><div><b>A service call</b><div class="note">Its Jobber request - the start of the work, no quote; waits for Wettech to schedule it</div></div></button></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button>`);
 }
 // A service call that needs a quote (Florida SouthWestern #14657, Nov 2026): Service call done -> Quote from
@@ -2687,8 +2719,8 @@ function jobberLinkHtml(c){
   return out.join(' · ');
 }
 // The Jobber job (or, before there is one, the request) the item follows.
-function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['job', J.job] : (J.request && J.request.number) ? ['request', J.request] : null;
-  return r ? ` · <a href="${esc(r[1].uri || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ${r[0]} #${esc(r[1].number)} ↗</a>` : ''; }
+function jobberNo(c){ const J = c.jobber || {}, r = (J.job && J.job.number) ? ['job', J.job] : (J.request && (J.request.number || J.request.id)) ? ['request', J.request] : null;
+  return r ? ` · <a href="${esc(r[1].uri || '#')}" target="_blank" rel="noopener" onclick="event.stopPropagation()">Jobber ${r[0]}${r[1].number ? ' #' + esc(r[1].number) : ''} ↗</a>` : ''; }
 // A document's number with its amount, e.g. "#Q-5521 $950.00".
 function numAmt(num, amt){ const n = num ? `<span class="note">#${esc(String(num).replace(/^#/, ''))}</span>` : ''; const a = amt != null ? `<b>${money(amt)}</b>` : ''; return [n, a].filter(Boolean).join(' '); }
 // Sections folded away stay folded (this browser only): the not-urgent quotes, the maintenance list.
