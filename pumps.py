@@ -2026,6 +2026,9 @@ def _regex_extract(text, sender='', subject='', filename=''):
         kind = 'quote'
     elif re.search(r'\breport\b', head):
         kind = 'report'
+    elif re.search(r'(?:your|total)\s+(?:cost|price)\b[\s\-–—_.:]*\$\s*[\d,]+\.\d{2}', text or '', re.I):
+        # Wettech's letter quote without "We are pleased to quote" (FSW, Nov 2026): RE:, the work, "Your Cost ---- $".
+        kind = 'quote'
     out = {'kind': kind, 'vendor': _vendor_display(f'{sender}\n{text}'), 'doc_number': '', 'doc_date': '',
            'po_number': '', 'ordered_by': '', 'wo_number': '', 'quote_reference': '', 'client_name': '', 'site': '',
            'category': 'repair', 'description': '', 'line_items': [], 'subtotal': None, 'tax': None, 'total': None,
@@ -2217,6 +2220,10 @@ def _letter_quote(text, out):
         return
     m = re.search(r'following\s+(?:services|work|items?)[^\n]*\n(.+?)\n\s*(?:your|total)\s+(?:cost|price)', text,
                   re.I | re.S)
+    if not m:
+        # No "We are pleased to quote you on the following services" (FSW Ft Myers, Nov 2026): the work is what
+        # comes between the "RE:" line and "Your Cost".
+        m = re.search(r'^\s*RE\s*:[^\n]*\n(.+?)\n\s*(?:your|total)\s+(?:cost|price)', text, re.I | re.S | re.M)
     work = re.sub(r'\s+', ' ', m.group(1)).strip() if m else ''
     if work:
         out['description'] = work[:300]
