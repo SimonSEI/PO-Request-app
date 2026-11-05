@@ -3946,6 +3946,31 @@ class PumpsTest(unittest.TestCase):
             conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
             conn.commit()
 
+    def test_wettech_letter_quote_without_pleased_to_quote(self):
+        """Nov 5 2026, FSW Ft Myers: Wettech's letter went "RE: FSW Ft Myers", the work, "Your Cost ---- $ 1338.98" -
+        no "We are pleased to quote you". Read as "other" with no description (PO@ left it for a person, and our
+        Jobber quote #9262 said only "Pump service"). It's a quote, and the work is its description."""
+        import docx as _docx
+        d = _docx.Document()
+        for line in ['of Southwest Florida LLC', 'Email: wettec@verizon.net', '', 'November 3, 2026', '', 'Stahlman England',
+                     'Attn: Simon', 'RE: FSW Ft Myers', '',
+                     'Field service to check out pump system, found suction line broke and check valve bad. Field service '
+                     'to furnish and install new 3 inch inline check valve and PVC parts needed to repair line, prime and '
+                     'test system.', '', 'Your Cost ---- $ 1338.98', '', 'Price includes labor to date',
+                     'Price includes Sales tax', 'Terms:  Net 10 days', 'Delivery: 3-5 days after receipt of order',
+                     'Prices good for 30 days.', '', 'Thank You', 'H. H. (Tom) Morgan III']:
+            d.add_paragraph(line)
+        buf = io.BytesIO()
+        d.save(buf)
+        text = P.extract_text('FSW.docx', buf.getvalue())
+        x = P._letter_prices(text, P._clean_extraction(P._regex_extract(text, 'tomm@wettec.biz', 'RE: Awaiting a quote', 'FSW.docx')))
+        self.assertEqual(x['kind'], 'quote')
+        self.assertEqual(x['client_name'], 'FSW Ft Myers')
+        self.assertEqual(x['total'], 1338.98)
+        self.assertTrue(x['description'].startswith('Field service to check out pump system, found suction line broke'))
+        self.assertIn('prime and test system.', x['line_items'][0]['description'])
+        self.assertNotEqual(x['line_items'][0]['name'], 'Pump service')
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
