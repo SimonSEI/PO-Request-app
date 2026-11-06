@@ -4006,6 +4006,17 @@ class PumpsTest(unittest.TestCase):
         finally:
             P.jobber_status, P.client_jobs, P.recurring_jobs, P.job_detail = saved
 
+    def test_scada_renewal_bill_invoice_subject(self):
+        """Nov 6 2026, The Retreat at Ft Myers: the SCADA renewal bill's invoice was titled "Pump service - ..." and
+        retyped as "SCADA Renewal - The Retreat at Ft Myers". It's titled that way now."""
+        doc = {'kind': 'bill', 'vendor': 'Wettech', 'client_name': 'The Retreat at Ft Myers', 'subtotal': 803.76,
+               'total': 856.0, 'description': '', 'line_items': [
+                   {'name': 'SCADA', 'description': 'Annual SCADA cellular subscription renewal 2026-2027', 'quantity': 1,
+                    'unit_price': 803.76, 'amount': 803.76}]}
+        self.assertEqual(P.suggest_invoice(doc)['subject'], 'SCADA Renewal - The Retreat at Ft Myers')
+        doc['line_items'][0]['description'] = 'Replace check valve'
+        self.assertEqual(P.suggest_invoice(doc)['subject'], 'Pump service - The Retreat at Ft Myers')
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
