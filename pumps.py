@@ -6186,6 +6186,22 @@ def _gov_refs_todo(case, who):
         conn.close()
 
 
+def scada_renewal_subject(doc, where=''):
+    """A SCADA renewal bill's invoice subject: "SCADA Renewal - The Retreat at Ft Myers" (Nov 2026: it went out as
+    "Pump service - ..." and was retyped by hand). '' when the bill isn't a SCADA renewal."""
+    items = doc.get('line_items')
+    if isinstance(items, str):
+        try:
+            items = json.loads(items or '[]')
+        except ValueError:
+            items = []
+    text = ' '.join([doc.get('description') or '', doc.get('file_name') or ''] +
+                    [f"{i.get('name') or ''} {i.get('description') or ''}" for i in items or [] if isinstance(i, dict)])
+    if not is_scada_renewal(text):
+        return ''
+    return f"SCADA Renewal - {where}" if where else 'SCADA Renewal'
+
+
 def suggest_invoice(doc, case=None):
     """Our invoice for a vendor bill when there is no client quote to copy:
     one Service Proposal Amount line, the bill before tax plus the quote
@@ -6198,7 +6214,7 @@ def suggest_invoice(doc, case=None):
                 'line_items': gov_line_items(doc, case), 'markup_pct': GOV_MARKUP_PCT, 'gov': gov}
     items = one_line_items(doc, QUOTE_MARKUP_PCT)
     where = (case or {}).get('client_name') or doc.get('client_name') or ''
-    subject = f"Pump service - {where}" if where else 'Pump service'
+    subject = scada_renewal_subject(doc, where) or (f"Pump service - {where}" if where else 'Pump service')
     if (case or {}).get('po_number') or doc.get('po_number'):
         subject += f" (PO {(case or {}).get('po_number') or doc.get('po_number')})"
     return {'subject': subject[:255], 'line_items': items, 'markup_pct': QUOTE_MARKUP_PCT}
@@ -15655,7 +15671,8 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
             return {'pending': 'Could not read our quote from Jobber'}
         client_id = (j.get('client') or {}).get('id') or case.get('jobber_client_id')
         where = case.get('client_name') or ''
-        subject = (doc.get('proposal_title') or case.get('title') or f'Pump service - {where}')[:255]
+        subject = (scada_renewal_subject(doc, where) or doc.get('proposal_title') or case.get('title') or
+                   f'Pump service - {where}')[:255]
         gov = gov_client(doc, case)
         if gov:
             # The county is invoiced what it approved, with its PO in the subject and nothing taxed.
