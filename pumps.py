@@ -6872,6 +6872,20 @@ def _invoice_suggestion(doc, case=None, client_id=None, job_id=None):
     were quoted (and approved). Otherwise the bill's lines plus any markup."""
     sugg = suggest_invoice(doc, case)
     case = case or {}
+    if job_id and jobber_status()['connected']:
+        # A one-off job picked by hand (The Retreat at Ft Myers, Nov 2026: "connect this to an existing job that is
+        # not recurring"): the invoice goes on it - at the job's own prices when it has them, else the bill + markup.
+        try:
+            jd = job_detail(job_id)
+        except JobberError:
+            jd = None
+        if jd and jd.get('id') and jd.get('type') != 'recurring':
+            priced = [li for li in jd['line_items'] if float(li.get('unit_price') or 0) > 0]
+            if priced:
+                sugg.update(bill_lines=sugg['line_items'], line_items=priced)
+            sugg.update(client_id=client_id, job={**{k: jd[k] for k in ('id', 'number', 'title', 'uri', 'total', 'status', 'type')},
+                                                  'priced': bool(priced)})
+            return sugg
     qid = (json.loads(case.get('jobber') or '{}').get('quote') or {}).get('id') if case else None
     if qid and jobber_status()['connected']:
         try:
@@ -10416,18 +10430,32 @@ def h_doc_invoice_suggestion(actor, doc_id):
                                              request.args.get('job_id') or None)}
 
 
+# A one-off job an invoice can still go on.
+ONE_OFF_OPEN = ('requires_invoicing', 'action_required', 'active', 'late', 'today', 'upcoming', 'unscheduled', 'on_hold')
+
+
 @api('/jobber/recurring_jobs')
 def h_recurring_jobs(actor):
-    """?client_id= - the client's live recurring jobs with their price, to pick the one an invoice goes on."""
-    out = []
-    for x in recurring_jobs(request.args.get('client_id') or ''):
+    """?client_id= - the client's live recurring jobs with their price, and (Nov 2026) its open one-off jobs,
+    newest first, to pick the one an invoice goes on."""
+    out, one_off = [], []
+    cid = request.args.get('client_id') or ''
+    try:
+        for x in client_jobs(cid)['jobs'] if cid else []:
+            if x.get('type') != 'recurring' and x.get('status') in ONE_OFF_OPEN:
+                one_off.append({'id': x['id'], 'number': str(x.get('number') or ''), 'title': x.get('title') or '',
+                                'status': x.get('status') or '', 'created': x.get('created') or '', 'uri': x.get('uri') or ''})
+    except JobberError:
+        pass
+    one_off.sort(key=lambda x: x['created'], reverse=True)
+    for x in recurring_jobs(cid):
         if x.get('status') == 'archived':
             continue
         d = job_detail(x['id'])
         price = sum(float(li.get('unit_price') or 0) * float(li.get('quantity') or 1) for li in d['line_items'])
         out.append({'id': x['id'], 'number': str(x.get('number') or ''), 'title': x.get('title') or '',
                     'property_label': x.get('property_label') or '', 'price': round(price, 2), 'uri': d.get('uri') or ''})
-    return {'jobs': out}
+    return {'jobs': out, 'one_off': one_off[:20]}
 
 
 @api('/docs/<int:doc_id>')

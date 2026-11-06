@@ -3971,6 +3971,41 @@ class PumpsTest(unittest.TestCase):
         self.assertIn('prime and test system.', x['line_items'][0]['description'])
         self.assertNotEqual(x['line_items'][0]['name'], 'Pump service')
 
+    def test_invoice_on_a_one_off_job_picked_by_hand(self):
+        """Nov 6 2026, The Retreat at Ft Myers (Wettech bill #29282): "connect this to an existing job that is not
+        recurring". The Draft invoice dialog lists the client's open one-off jobs too; picked, the invoice goes on
+        that job - the bill + 30% when the job has no prices, the job's own lines when it has."""
+        saved = (P.jobber_status, P.client_jobs, P.recurring_jobs, P.job_detail)
+        P.jobber_status = lambda: {'connected': True}
+        P.client_jobs = lambda cid: {'jobs': [
+            {'id': 'J-ONE1', 'number': '14701', 'title': 'Retreat pump service call', 'status': 'requires_invoicing',
+             'type': 'one_off', 'created': '2026-11-03', 'uri': 'https://j/1'},
+            {'id': 'J-OLD', 'number': '14000', 'title': 'Old job', 'status': 'archived', 'type': 'one_off', 'created': '2026-01-01'},
+            {'id': 'J-REC', 'number': '9000', 'title': 'Monthly', 'status': 'active', 'type': 'recurring', 'created': '2025-01-01'}],
+            'properties': []}
+        P.recurring_jobs = lambda cid: []
+        details = {'J-ONE1': {'id': 'J-ONE1', 'number': '14701', 'title': 'Retreat pump service call', 'status': 'requires_invoicing',
+                              'type': 'one_off', 'uri': 'https://j/1', 'total': 0, 'line_items': [], 'instructions': ''},
+                   'J-ONE2': {'id': 'J-ONE2', 'number': '14702', 'title': 'Check valve', 'status': 'active', 'type': 'one_off',
+                              'uri': 'https://j/2', 'total': 1200, 'instructions': '',
+                              'line_items': [{'name': 'Check valve', 'description': 'Replace', 'quantity': 1, 'unit_price': 1200,
+                                              'taxable': True}]}}
+        P.job_detail = lambda jid: details[jid]
+        try:
+            j = self.c.get('/pumps/api/jobber/recurring_jobs?client_id=C-RET').get_json()
+            self.assertEqual([x['number'] for x in j['one_off']], ['14701'], 'open one-off jobs only')
+            doc = {'id': 0, 'kind': 'bill', 'vendor': 'Wettech', 'doc_number': '29282', 'subtotal': 803.76, 'total': 856.0,
+                   'client_name': 'The Retreat at Ft Myers', 'line_items': [{'name': 'Service call', 'description': 'Pump service',
+                   'quantity': 1, 'unit_price': 803.76, 'amount': 803.76}], 'jobber': {}}
+            s1 = P.invoice_suggestion(doc, None, 'C-RET', 'J-ONE1')
+            self.assertEqual((s1['job']['number'], s1['job']['priced']), ('14701', False))
+            self.assertNotIn('recurring', s1)
+            self.assertAlmostEqual(sum(li['unit_price'] * li.get('quantity', 1) for li in s1['line_items']), 1045, delta=1)
+            s2 = P.invoice_suggestion(doc, None, 'C-RET', 'J-ONE2')
+            self.assertEqual((s2['job']['number'], s2['line_items'][0]['name']), ('14702', 'Check valve'))
+        finally:
+            P.jobber_status, P.client_jobs, P.recurring_jobs, P.job_detail = saved
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
