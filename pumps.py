@@ -13917,6 +13917,11 @@ def init_account_tables(c):
     # Maintenance contracts we bill each month (the office's 2026 Monthly Billing
     # Checklist): one row per line - "Autumn Woods M/M $3,605", "Autumn Woods
     # parts" - with the months billed ({"2026": [1, 2, 3]}).
+    try:
+        # Each year's renewal invoice status in Jobber ({"2026": "awaiting_payment"}) - Nov 2026.
+        c.execute("ALTER TABLE pump_scada_accounts ADD COLUMN year_status TEXT DEFAULT '{}'")
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_contracts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   account TEXT NOT NULL,
@@ -14086,6 +14091,9 @@ def _anniversary(d, year):
         return d.replace(year=year, day=28)
 
 
+SCADA_UNPAID = ('awaiting_payment', 'past_due')
+
+
 def _scada_row(r, today):
     d = dict(r)
     try:
@@ -14117,13 +14125,22 @@ def _scada_row(r, today):
         days = (due - today).days
         d['days_left'] = days
         d['state'] = 'overdue' if days < 0 else ('due_soon' if days <= SCADA_DUE_SOON_DAYS else 'current')
+        # This renewal invoiced, not paid yet (Nov 2026): Awaiting payment, not Overdue/Current.
+        try:
+            st = json.loads(d.get('year_status') or '{}')
+        except ValueError:
+            st = {}
+        if filled and d['state'] != 'overdue' and st.get(str(filled[-1])) in SCADA_UNPAID:
+            y = str(filled[-1])
+            d['state'] = 'awaiting_payment'
+            d['awaiting'] = {'year': y, 'number': str(d['years'].get(y) or ''), 'status': st[y]}
     return d
 
 
 def scada_rows(conn):
     today = _today()
     out = [_scada_row(r, today) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
-    order = {'overdue': 0, 'due_soon': 1, 'unknown': 2, 'current': 3, 'inactive': 4}
+    order = {'overdue': 0, 'due_soon': 1, 'awaiting_payment': 2, 'unknown': 3, 'current': 4, 'inactive': 5}
     out.sort(key=lambda d: (order.get(d['state'], 9), d.get('next_due_on') or '9999', d['client'].lower()))
     return out
 
@@ -14200,12 +14217,28 @@ def is_scada_renewal(text):
     return 'scada' in t and ('subscription' in t or 'renew' in t)
 
 
-def scada_invoice_year(text, issued):
+SCADA_EARLY_DAYS = 45   # an invoice this many days or less before the renewal date is that renewal's
+
+
+def scada_invoice_year(text, issued, renewal_date=''):
     """The year a renewal invoice counts for: "2025-2026 Renewal" is 2025 even
-    when it went out in January 2026; otherwise the year it was issued."""
+    when it went out in January 2026; otherwise the year it was issued - unless it went out within a few weeks
+    before the site's renewal date, when it is that renewal's (Nov 2026: invoiced in December for the January
+    renewal counted for the year before, and the row showed Overdue)."""
     m = re.search(r'\b(20\d\d)\s*[-–/]\s*(20\d\d)\b', text or '') or \
         re.search(r'\b(20\d\d)\s+renewal', text or '', re.I)
-    return m.group(1) if m else (issued or '')[:4]
+    if m:
+        return m.group(1)
+    year = (issued or '')[:4]
+    try:
+        i = datetime.strptime((issued or '')[:10], '%Y-%m-%d').date()
+        due = datetime.strptime((renewal_date or '')[:10], '%Y-%m-%d').date()
+    except ValueError:
+        return year
+    nxt = next((a for a in (_anniversary(due, i.year), _anniversary(due, i.year + 1)) if a >= i), None)
+    if nxt and (nxt - i).days <= SCADA_EARLY_DAYS:
+        return str(nxt.year)
+    return year
 
 
 def _scada_match(rows, client_name, text):
@@ -14231,28 +14264,52 @@ def record_scada_invoice(conn, inv):
     if not number or status in ('draft', 'voided', 'bad_debt') or not is_scada_renewal(text):
         return None
     rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
-    if any(number == str(v).strip() for r in rows for v in json.loads(r['years'] or '{}').values()):
-        return None
     client = (inv.get('client') or {}).get('name') or ''
     issued = (inv.get('issuedDate') or inv.get('createdAt') or '')[:10]
-    year = scada_invoice_year(text, issued)
     row = _scada_match(rows, client, text)
+    year = scada_invoice_year(text, issued, (row or {}).get('renewal_date') or '')
     now = _now_text()
+    for r in rows:
+        ys = json.loads(r['years'] or '{}')
+        y = next((k for k, v in ys.items() if str(v).strip() == number), None)
+        if y is None:
+            continue
+        # Already on the tab: keep its status current (Awaiting payment / paid), and a renewal filed under the
+        # year before - invoiced a few weeks early - goes to its own year when that one is empty (Nov 2026).
+        moved = row is not None and r['id'] == row['id'] and y != year and year > y and not str(ys.get(year) or '').strip()
+        if moved:
+            ys.pop(y)
+            ys[year] = number
+        st = json.loads(r.get('year_status') or '{}')
+        yy = year if moved else y
+        if moved or st.get(yy) != status:
+            st.pop(y, None)
+            st[yy] = status
+            conn.execute('UPDATE pump_scada_accounts SET years=?, year_status=?, updated_by=?, updated_at=? WHERE id=?',
+                         (json.dumps(ys), json.dumps(st), 'jobber sync', now, r['id']))
+            if moved:
+                _event(conn, 'jobber sync', 'SCADA renewal year', f"{r['client']}: invoice #{number} is the {year} "
+                                                                  f"renewal (issued {issued}), not {y}")
+            return 'moved' if moved else 'status'
+        return None
     if row is None:
         if any(fuzzy_has(r['client'], client) for r in rows):
             return None  # the client has several sites on the tab and the invoice doesn't say which
         conn.execute('''INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years,
-                          jobber_names, notes, updated_by, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)''',
+                          jobber_names, notes, updated_by, updated_at, year_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)''',
                      (client[:120], issued, 'Annual Subscription - SCADA', _fmt_money(inv), 'Wettech',
-                      json.dumps({year: number}), client[:120], f'Found in Jobber (invoice #{number})', 'jobber sync', now))
+                      json.dumps({year: number}), client[:120], f'Found in Jobber (invoice #{number})', 'jobber sync', now,
+                      json.dumps({year: status})))
         _event(conn, 'jobber sync', 'SCADA client found', f'{client}: invoice #{number} ({year})')
         return 'added'
     years = json.loads(row['years'] or '{}')
     if str(years.get(year) or '').strip():
         return None
     years[year] = number
-    conn.execute('UPDATE pump_scada_accounts SET years=?, updated_by=?, updated_at=? WHERE id=?',
-                 (json.dumps(years), 'jobber sync', now, row['id']))
+    st = json.loads(row.get('year_status') or '{}')
+    st[year] = status
+    conn.execute('UPDATE pump_scada_accounts SET years=?, year_status=?, updated_by=?, updated_at=? WHERE id=?',
+                 (json.dumps(years), json.dumps(st), 'jobber sync', now, row['id']))
     _event(conn, 'jobber sync', 'SCADA renewed', f"{row['client']} {year}: invoice #{number}")
     return 'recorded'
 
@@ -14269,7 +14326,7 @@ def scada_year_invoices(conn, row, year):
         # A synced SCADA invoice counts for the site the SCADA tab's own matching gives it - one site only (a client
         # with several sites and an invoice that doesn't say which counts for none: the tab's number decides).
         scada = re.search(r'\bscada\b', it['title'] or '', re.I) and \
-            scada_invoice_year(it['title'], (it['start_at'] or it['created_at'] or '')[:10]) == year and \
+            scada_invoice_year(it['title'], (it['start_at'] or it['created_at'] or '')[:10], row.get('renewal_date') or '') == year and \
             ((_scada_match(rows, it['client_name'] or '', it['title'] or '') or {}).get('id') == row['id'])
         if (mine or scada) and (it['status'] or '') not in ('draft', 'voided', 'bad_debt') and it['number'] not in seen:
             out.append({'number': it['number'], 'status': it['status'] or 'sent', 'uri': it['web_uri'] or ''})
@@ -14288,7 +14345,7 @@ def scada_already_invoiced(conn, client_name, text):
     row = _scada_match(rows, client_name or '', text)
     if not row:
         return None
-    year = scada_invoice_year(text, _today().isoformat())
+    year = scada_invoice_year(text, _today().isoformat(), row.get('renewal_date') or '')
     invs = scada_year_invoices(conn, row, year)
     return (row, year, invs) if invs else None
 

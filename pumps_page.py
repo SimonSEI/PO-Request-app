@@ -2215,7 +2215,7 @@ async function loadScada(){
   if (!j.success) { toast(j.error, true); return; }
   SC = j;
   const show = document.getElementById('scShow').value;
-  const lab = {overdue:['r','Overdue'], due_soon:['a','Due soon'], current:['g','Current'], unknown:['','No date'], inactive:['','Stopped']};
+  const lab = {overdue:['r','Overdue'], due_soon:['a','Due soon'], awaiting_payment:['b','Awaiting payment'], current:['g','Current'], unknown:['','No date'], inactive:['','Stopped']};
   const rows = j.scada.filter(s => show === 'all' || s.state !== 'inactive');
   // Only this year's column, unless "All years" is open (the office, Oct 2026).
   const cur = String(new Date().getFullYear());
@@ -2229,7 +2229,7 @@ async function loadScada(){
   const yearsBtn = `<a href="#" onclick="event.preventDefault();window.SC_ALL_YEARS=!window.SC_ALL_YEARS;loadScada()">${window.SC_ALL_YEARS ? 'just ' + cur : 'all years'}</a>`;
   document.getElementById('scadaTable').innerHTML = `<thead><tr><th>Status</th><th>Client</th><th>Renewal date</th><th>Product</th><th class="num">Amount</th><th>Our bill</th><th>Vendor</th><th>Renewal quote</th>${yr.map((y, i) => `<th>${y}${i === yr.length - 1 ? ` <span class="note" style="font-weight:400">· ${yearsBtn}</span>` : ''}</th>`).join('')}<th></th></tr></thead><tbody>` +
     (rows.map(s => `<tr>
-      <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.complimentary ? ' <span class="chip">complimentary</span>' : ''}${s.days_left != null && s.state !== 'current' && s.state !== 'inactive' ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
+      <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.complimentary ? ' <span class="chip">complimentary</span>' : ''}${s.awaiting ? `<div class="note">${esc(s.awaiting.year)} renewal invoiced - #${esc(s.awaiting.number)}${s.awaiting.status === 'past_due' ? ' (past due)' : ''}</div>` : ''}${s.days_left != null && !['current', 'inactive', 'awaiting_payment'].includes(s.state) ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
       <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}</td>
       <td style="white-space:nowrap">${esc(s.next_due_on)}</td><td class="note">${esc(s.product)}</td>
       <td class="num">${money(s.vendor_cost)}</td><td>${esc(s.our_bill)}</td><td>${esc(s.vendor)}</td>
@@ -2500,7 +2500,7 @@ function drawAccounts(){
   const cons = AC.accounts.flatMap(a => (a.contracts || []).filter(c => c.status === 'active'));
   const tot = act.reduce((t, a) => { const k = equipCounts(a); t.p += k.pumps; t.f += k.filters; return t; }, {p: 0, f: 0});
   document.getElementById('acInfo').innerHTML = `${act.length} active accounts · <b>${tot.p} pumps</b> maintained · <b>${tot.f} lake filter sites</b> · ${new Set(cons.map(c => c.account)).size} maintenance contracts (${money(cons.reduce((t, c) => t + (c.frequency === 'monthly' ? c.amount || 0 : 0), 0))}/mo) · <b>${act.filter(due).length} due in ${esc(AC.month)}</b>`;
-  const st = {overdue:'r', due_soon:'a', current:'g', inactive:'', unknown:''};
+  const st = {overdue:'r', due_soon:'a', awaiting_payment:'b', current:'g', inactive:'', unknown:''};
   const nextDue = a => { const out = [], now = new Date().getMonth() + 1;
     const next = (ms, every) => { if (every) return 'this month'; const m = (ms || '').split(',').filter(Boolean).map(Number); if (!m.length) return '';
       const n = m.find(x => x >= now) || m[0]; return n === now ? 'this month' : MSHORT[n - 1]; };
