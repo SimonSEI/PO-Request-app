@@ -655,7 +655,7 @@ function todoRow(t){
       ${t.kind !== 'approved_quote' && (t.link.uri || t.link.case_id) ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap">${(t.link.uris || []).length > 1 ? t.link.uris.map(u => `<a class="btn s" href="${esc(u.uri)}" target="_blank" rel="noopener">Open ${esc(u.label)} ↗</a>`).join('') + `<button class="btn s" onclick='openAll(${JSON.stringify(t.link.uris.map(u => u.uri)).replace(/'/g, "&#39;")})'>Open both ↗</button>` : t.link.uri ? `<a class="btn s" href="${esc(t.link.uri)}" target="_blank" rel="noopener">${esc(t.link.label || 'Open in Jobber')} ↗</a>` : ''}${t.link.case_id ? `<button class="btn s" onclick="openCase(${t.link.case_id})">Open job</button>` : ''}${t.link.scada_id ? `<button class="btn s" onclick="showTab('scada')">SCADA</button>` : ''}</div>` : ''}
       ${t.link.close_job ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="closeJobberJob('${esc(t.link.close_job)}', this)">Close job in Jobber</button></div>` : ''}
       ${t.link.tab && !t.link.uri && !t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s" onclick="showTab('${esc(t.link.tab)}')">Open ${esc(t.link.label || t.link.tab)}</button></div>` : ''}
-      ${(t.key || '').startsWith('maint-check:') && t.link.mailto ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><a class="btn s p" href="${esc(t.link.mailto)}" title="Opens an email in your mail program - nothing is sent from here">✉ ${esc(t.link.ask || 'Ask for the invoices')}</a></div>` : ''}
+      ${(t.key || '').startsWith('maint-check:') && t.link.mailto ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" title="The email, ready to copy or open in Outlook - nothing is sent from here" onclick='askForInvoices(${JSON.stringify(t.link.mailto).replace(/'/g, "&#39;")}, ${JSON.stringify(t.link.ask || 'Ask for the invoices').replace(/'/g, "&#39;")})'>✉ ${esc(t.link.ask || 'Ask for the invoices')}</button></div>` : ''}
       ${(t.key || '').startsWith('maint-check:') && (t.link.accounts || []).length ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><span class="note" style="align-self:center">Invoice in already?</span>${t.link.accounts.map(a => `<button class="btn s" title="Its invoice is in (or nothing is owed) - it drops off this list" onclick='maintDone(${JSON.stringify(t.link.month)}, ${JSON.stringify(t.link.vendor)}, ${JSON.stringify(a).replace(/'/g, "&#39;")}, true)'>✓ ${esc(a)}</button>`).join('')}</div>` : ''}
       ${t.link.draft_scada ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" onclick="draftScadaQuote(${t.link.scada_id}, this)">Draft quote in Jobber</button></div>` : ''}
       ${(t.key || '').startsWith('gulfshore-unbilled:') && t.link.case_id ? `<div style="margin:6px 0 0 24px;display:flex;gap:6px;flex-wrap:wrap"><button class="btn s p" title="Billed already - type our Jobber invoice number" onclick="linkInvoice(${t.link.case_id})">🔗 Link our invoice</button><button class="btn s" title="Billed through a contract - no invoice to link" onclick="billsPayOk([${t.link.case_id}])">OK to pay now</button></div>` : ''}
@@ -3113,6 +3113,17 @@ async function accountTodoDone(id, done, ev){
 
 // ── mailbox scan ─────────────────────────────────────
 function showSyncErrors(){ const b = document.getElementById('statusBox'); if (b) { b.open = true; b.scrollIntoView({behavior: 'smooth'}); } }
+// "Ask Wettech / Jordan for the invoices" (Nov 2026: a mailto link did nothing without a desktop mail app): the email
+// ready to copy, or opened in Outlook on the web. Nothing is sent from the app.
+function askForInvoices(mailto, title){
+  const [addr, qs] = (mailto || '').replace(/^mailto:/i, '').split('?');
+  const qp = new URLSearchParams(qs || ''), to = decodeURIComponent(addr || ''), subject = qp.get('subject') || '', body = qp.get('body') || '';
+  window._askMail = {to, subject, body};
+  const owa = 'https://outlook.office.com/mail/deeplink/compose?' + new URLSearchParams({to, subject, body}).toString();
+  openModal(esc(title), `<div class="note">To <b>${esc(to || '(no address saved)')}</b> ${to ? `<a href="#" onclick="event.preventDefault();navigator.clipboard.writeText(_askMail.to);toast('Address copied')">copy</a>` : ''} · Subject <b>${esc(subject)}</b> <a href="#" onclick="event.preventDefault();navigator.clipboard.writeText(_askMail.subject);toast('Subject copied')">copy</a></div>
+    <textarea id="askBody" rows="12" style="width:100%;margin-top:8px;font:inherit">${esc(body)}</textarea>`,
+    `<button class="btn" onclick="closeModal()">Close</button><button class="btn" onclick="navigator.clipboard.writeText(document.getElementById('askBody').value);toast('Email copied - paste it into Outlook')">Copy email</button><a class="btn" href="${esc(mailto)}">Mail app</a><a class="btn p" target="_blank" rel="noopener" href="${esc(owa)}">Open in Outlook ↗</a>`);
+}
 function statusSummary(){
   const box = document.getElementById('statusBox'); if (!box) return;
   const items = [...box.querySelectorAll('.strip>div')];
