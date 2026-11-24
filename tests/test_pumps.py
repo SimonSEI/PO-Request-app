@@ -6678,6 +6678,49 @@ class PumpsTest(unittest.TestCase):
         self.assertTrue(old[b1['case_id']]['emailed_at'])
         self.assertIn(b2['case_id'], {b['case_id'] for g in j['vendors'] for b in g['bills']}, 'not sent: still to pay')
 
+    def test_bills_to_pay_auto_email_weekdays(self):
+        """Nov 2026, the office: the bills in the "Pay vendors" to-do go to Christian by themselves - one email each
+        weekday from 8am, marked paid like Send; not on weekends, once a day, and not when switched off."""
+        from datetime import datetime as _dt
+        self.extracts['b-auto1.pdf'] = extraction('bill', '40991', client='Auto Lakes HOA', subtotal=250)
+        b = self.upload('b-auto1.pdf')
+        self.c.patch(f"/pumps/api/cases/{b['case_id']}", json={'sei_invoice_number': '37091'})
+        sent = []
+        saved, env = P.graph_send, os.environ.get('CHRISTIAN_EMAIL')
+        P.graph_send = lambda to, subject, html, atts=None, sender=None: sent.append((to, subject))
+        os.environ['CHRISTIAN_EMAIL'] = 'christian@example.com'
+        day = P._today()
+        while day.weekday() > 4:
+            day = day.fromordinal(day.toordinal() - 1)
+        sat = day
+        while sat.weekday() != 5:
+            sat = sat.fromordinal(sat.toordinal() + 1)
+        key = f"auto_pay_email:{day.isoformat()}"
+        try:
+            self.assertIsNone(P._scheduled_pay_email(_dt(sat.year, sat.month, sat.day, 9)), 'not on a Saturday')
+            self.assertIsNone(P._scheduled_pay_email(_dt(day.year, day.month, day.day, 7)), 'not before 8am')
+            self.assertTrue(self.c.post('/pumps/api/bills_to_pay/auto', json={'on': False}).get_json()['success'])
+            self.assertIsNone(P._scheduled_pay_email(_dt(day.year, day.month, day.day, 9)), 'switched off')
+            self.assertFalse(self.c.get('/pumps/api/bills_to_pay').get_json()['auto'])
+            self.c.post('/pumps/api/bills_to_pay/auto', json={'on': True})
+            P._state_set(key, None)
+            r = P._scheduled_pay_email(_dt(day.year, day.month, day.day, 9))
+            self.assertIn(b['case_id'], r['case_ids'])
+            self.assertEqual(sent[0][0], 'christian@example.com')
+            self.assertIsNone(P._scheduled_pay_email(_dt(day.year, day.month, day.day, 10)), 'once a day')
+            self.assertEqual(len(sent), 1)
+            j = self.c.get('/pumps/api/bills_to_pay').get_json()
+            self.assertNotIn(b['case_id'], {x['case_id'] for g in j['vendors'] for x in g['bills']})
+            self.assertTrue({x['case_id']: x for x in j['paid']}[b['case_id']]['emailed_at'])
+        finally:
+            P.graph_send = saved
+            P._state_set(key, None)
+            P._state_set('auto_pay_email', None)
+            if env is None:
+                os.environ.pop('CHRISTIAN_EMAIL', None)
+            else:
+                os.environ['CHRISTIAN_EMAIL'] = env
+
     def test_big_bill_waits_for_the_client_to_pay(self):
         """The office (Oct 2026): a vendor bill over $1,500 isn't good to pay until our Jobber invoice shows paid -
         invoiced isn't enough. Smaller ones still go once invoiced."""

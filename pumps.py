@@ -10252,7 +10252,7 @@ def bills_paid_recently(conn, days=60, q=''):
 def h_bills_to_pay(actor):
     conn = _conn()
     try:
-        return {'vendors': bills_to_pay(conn), 'paid': bills_paid_recently(conn),
+        return {'vendors': bills_to_pay(conn), 'paid': bills_paid_recently(conn), 'auto': auto_pay_on(conn),
                 'christian': _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', ''))}
     finally:
         conn.close()
@@ -10418,9 +10418,25 @@ def h_bills_to_pay_email(actor):
         conn.close()
     if not data.get('send'):
         return {'email': {k: e[k] for k in ('to', 'subject', 'body', 'count', 'total')}}
+    return send_bills_to_pay(ids, actor, data.get('body'))
+
+
+def send_bills_to_pay(ids, actor, body=None):
+    """Email Christian the ready bills (all, or the case ids given), the bills attached - and mark them paid, the
+    same as the office's Send. Returns {sent, total, to, case_ids}."""
+    import html as _html
+    conn = _conn()
+    try:
+        e = bills_to_pay_email(conn, ids, actor)
+        files = [dict(r) for r in conn.execute(
+            f"SELECT file_name, file_path FROM pump_docs WHERE id IN ({','.join('?' * len(e['doc_ids'])) or 'NULL'})",
+            e['doc_ids'])]
+        cases = [b['case_id'] for g in bills_to_pay(conn) for b in g['bills'] if b['ready'] and (not ids or b['case_id'] in ids)]
+    finally:
+        conn.close()
     if not e['to']:
         raise ValueError("No email address is saved for Christian - add it in the main app's Settings")
-    body = (data.get('body') or '').strip() or e['body']
+    body = (body or '').strip() or e['body']
     html = '<div style="font-family:Arial,sans-serif;font-size:14px">' + '<br>'.join(
         _html.escape(l).replace('  ', '&nbsp;&nbsp;') for l in body.split('\n')) + '</div>'
     atts = []
@@ -10444,6 +10460,56 @@ def h_bills_to_pay_email(actor):
     finally:
         conn.close()
     return {'sent': e['count'], 'total': e['total'], 'to': e['to'], 'case_ids': cases}
+
+
+AUTO_PAY_HOUR = 8   # weekdays from 8am Naples time
+AUTO_PAY_ACTOR = 'Auto email (bills to pay)'
+
+
+def auto_pay_on(conn=None):
+    return not (_state_get('auto_pay_email', conn=conn) or {}).get('off')
+
+
+def _scheduled_pay_email(now=None):
+    """Hourly: once each weekday from 8am, the bills ready to pay (the "Pay vendors" to-do) go to Christian in one
+    email, bills attached, and are marked paid - as if the office pressed Send (Nov 2026, the office). Held, possible
+    duplicate and not-yet-due bills stay out. Switched off on the Bills to pay tab; "Undo paid" puts one back."""
+    now = now or _now()
+    if now.weekday() > 4 or now.hour < AUTO_PAY_HOUR or not auto_pay_on():
+        return None
+    key = f"auto_pay_email:{now.date().isoformat()}"
+    if _state_get(key):
+        return None
+    conn = _conn()
+    try:
+        ready = [b for g in bills_to_pay(conn) for b in g['bills'] if b['ready'] and not b['asked_at']]
+        to = _app_setting(conn, 'christian_email', os.environ.get('CHRISTIAN_EMAIL', ''))
+    finally:
+        conn.close()
+    if not ready:
+        _state_set(key, {'at': _now_text(), 'sent': 0})
+        return None
+    if not to:
+        print('  ⚠ Pumps: bills to pay not emailed - no address saved for Christian')
+        return None
+    try:
+        r = send_bills_to_pay([b['case_id'] for b in ready], AUTO_PAY_ACTOR)
+    except Exception as e:
+        print(f'  ⚠ Pumps: bills to pay not emailed to Christian: {e}')
+        return None
+    _state_set(key, {'at': _now_text(), **r})
+    print(f"  ✉ Pumps: emailed Christian {r['sent']} bill(s), ${r['total']:,.2f} - marked paid")
+    return r
+
+
+@api('/bills_to_pay/auto', methods=('POST',))
+def h_bills_to_pay_auto(actor):
+    """Body: {"on": bool} - the weekday email of ready bills to Christian on or off."""
+    if actor == BOT:
+        return _office_only(actor, 'Switching the automatic email to Christian')
+    on = bool(_json().get('on'))
+    _state_set('auto_pay_email', {'off': not on, 'by': actor, 'at': _now_text()})
+    return {'on': on}
 
 
 @api('/cases/<int:case_id>/pay_email/send', methods=('POST',))
@@ -16975,6 +17041,10 @@ def _scheduled_hourly():
     """Every hour: the month's diver to-do / email, SCADA renewals coming due,
     parts lead times on approved jobs, and the weekday 8am email."""
     _scheduled_dive_email()
+    try:
+        _scheduled_pay_email()
+    except Exception as e:
+        print(f'  ⚠ Pumps: bills to pay email: {e}')
     try:
         find_parts_leads()
     except Exception as e:
