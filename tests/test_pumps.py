@@ -4749,7 +4749,34 @@ class PumpsTest(unittest.TestCase):
         A.note_po_claude_problem('Your credit balance is too low to access the Anthropic API', 'reading vendor invoices')
         page = self.c.get('/pumps').get_data(as_text=True)
         self.assertIn('PO@ vendor-invoice checker', page)
-        self.assertIn('credit balance is too low', page)
+        self.assertIn('credit balance is too low', page)          # the raw error, in the tooltip
+        self.assertIn('out of credits', page)
+        self.assertIn('Check again', page)
+        # Check again: still failing keeps it; working clears it.
+        import anthropic as _an
+        saved, key = _an.Anthropic, P.ANTHROPIC_API_KEY
+        P.ANTHROPIC_API_KEY = 'k'
+
+        class Fail:
+            def __init__(self, **k):
+                self.messages = self
+
+            def create(self, **k):
+                raise RuntimeError('Your credit balance is too low to access the Anthropic API')
+
+        class Ok(Fail):
+            def create(self, **k):
+                return {}
+        try:
+            _an.Anthropic = Fail
+            r = self.c.post('/pumps/api/po_claude/check', json={}).get_json()
+            self.assertFalse(r['ok'])
+            self.assertIn('out of credits', r['error'])
+            _an.Anthropic = Ok
+            self.assertTrue(self.c.post('/pumps/api/po_claude/check', json={}).get_json()['ok'])
+            self.assertNotIn('PO@ vendor-invoice checker', self.c.get('/pumps').get_data(as_text=True))
+        finally:
+            _an.Anthropic, P.ANTHROPIC_API_KEY = saved, key
         A.note_po_claude_problem('')
         self.assertNotIn('PO@ vendor-invoice checker', self.c.get('/pumps').get_data(as_text=True))
 

@@ -366,7 +366,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
   <div>Jobber: <span id="syncHealth"></span><span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}{% if jobber.broken %}<b class="bad" title="{{ jobber.broken }}">disconnected - Jobber stopped accepting the app's sign-in</b> {% endif %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">{{ 'Reconnect' if jobber.broken else 'Connect' }} Jobber</a>{% else %}<b class="warn">not set up</b>{% endif %}</span></div>
   <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the To do list and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech and Gulfshore quotes, invoices and reports; anything it can't read waits in the To do list){% endif %}</div>
   <div id="syncErrors" class="hide"></div>
-  {% if po_claude.problem %}<div>PO@ vendor-invoice checker: <b class="bad">Claude failed{{ ' ' + po_claude.where if po_claude.where }} - reading with simple rules ({{ po_claude.problem }}, {{ po_claude.at }})</b></div>{% endif %}
+  {% if po_claude.problem %}<div>PO@ vendor-invoice checker: <b class="bad" title="{{ po_claude.problem }}">Claude isn't reading vendor invoices - {{ po_claude.plain }} (since {{ po_claude.at }}; simple rules meanwhile)</b> <button class="btn s" onclick="poClaudeCheck(this)">↻ Check again</button></div>{% endif %}
   <div>Matching bills to jobs: {% if grok %}<b class="ok">Grok on</b> (when no PO, quote # or email ties a vendor bill to a job){% else %}<span class="note">by PO, quote # and client only - set XAI_API_KEY to let Grok match the rest</span>{% endif %}</div>
   <div>Daily email: <span id="digestInfo">to {{ digest_to }} at {{ digest_hour }}am on weekdays</span>
     <button class="btn s" onclick="previewDigest()">Preview</button></div>
@@ -1268,6 +1268,13 @@ async function loadVInvoices(){
         ${x.case_id ? `<div style="display:flex;gap:4px;margin-top:2px"><input type="text" id="viOurs${x.id}" placeholder="${x.ours.number ? 'Change #' : 'Our Jobber invoice #'}" style="width:130px" onkeydown="if(event.key==='Enter')viLinkOurs(${x.id}, ${x.case_id})"><button class="btn s" onclick="viLinkOurs(${x.id}, ${x.case_id})">Save</button></div>` : '<span class="note">-</span>'}</td>
       <td><span class="chip ${cls}">${label}</span>${x.paid_on ? `<div class="note">paid ${esc(x.paid_on)}</div>` : ''}${x.state === 'cancelled' && x.case_id ? `<div><button class="btn s" title="Cancelled by mistake? Back to active" onclick="caseRestore(${x.case_id}).then(loadVInvoices)">↺ Restore</button></div>` : ''}</td></tr>`; }).join('')}</tbody></table>`
     : '<div class="empty">No vendor invoices here.</div>';
+}
+async function poClaudeCheck(btn){
+  btn.disabled = true; btn.textContent = 'Checking…';
+  const j = await api('/po_claude/check', {method: 'POST', body: {}});
+  btn.disabled = false; btn.textContent = '↻ Check again';
+  if (j.success && j.ok) { toast('Claude works again - the warning is cleared.'); setTimeout(() => location.reload(), 800); }
+  else toast('Still failing: ' + (j.error || 'unknown'), true);
 }
 async function billsAuto(on){
   const j = await api('/bills_to_pay/auto', {method: 'POST', body: {on}});
