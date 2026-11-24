@@ -6518,6 +6518,8 @@ def auto_draft_quote(doc_id, actor='Pumps (automatic)'):
             res = create_draft_quote(doc_id, t['client_id'], t['property_id'], sugg['line_items'], sugg['title'],
                                      '', actor)
             return {**res, 'how': t['how']}
+    except ExistingDraft as e:
+        return {'success': False, 'existing_draft': e.rec, 'error': str(e)}, 409
     except PossibleDuplicate as e:
         reason, dup = str(e), e.rec
     except (JobberError, ValueError) as e:
@@ -7707,6 +7709,14 @@ def create_draft_invoice(doc_id, client_id, line_items, subject='', job_id='', a
             raise ValueError(f"{row['client']}'s SCADA renewal for {year} is already invoiced: " +
                              ', '.join(f"#{i['number']} ({i['status'].replace('_', ' ')})" for i in invs) +
                              ' - a second invoice is not drafted.')
+        if not extra and is_scada_renewal(text):
+            rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+            srow = _scada_match(rows, (case_client['client_name'] if case_client else '') or doc.get('client_name') or '', text)
+            if srow:
+                y = scada_invoice_year(text, _today().isoformat(), srow.get('renewal_date') or '')
+                drafts = scada_year_drafts(conn, srow, y)
+                if drafts:
+                    raise ExistingDraft(srow['client'], y, drafts[0])
         if not force:
             dup = existing_jobber_record('invoice', client_id, items, ignore_ids=tuple(ignore_ids))
             if dup:
@@ -9611,7 +9621,19 @@ def h_link_jobber_job(actor, case_id):
         if d.get('service_call'):
             service_call_steps(conn, case_id, it, actor)
         conn.commit()
-        return {'job': {'number': it['number'], 'title': it['title'], 'uri': it.get('web_uri') or ''}}
+        bill = conn.execute("SELECT id FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                            "ORDER BY id DESC", (case_id,)).fetchone()
+    finally:
+        conn.close()
+    inv = None
+    if bill:
+        try:
+            inv = link_job_invoice(case_id, bill['id'], it['jobber_id'], actor)
+        except (JobberError, ValueError):
+            inv = None
+    conn = _conn()
+    try:
+        return {'job': {'number': it['number'], 'title': it['title'], 'uri': it.get('web_uri') or ''}, 'invoice': inv}
     finally:
         conn.close()
 
@@ -11389,6 +11411,8 @@ def h_doc_invoice(actor, doc_id):
         res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
                                    data.get('subject') or sugg['subject'], job_id or '', actor,
                                    force=bool(data.get('force')), visit_ids=_visit_ids(visit))
+    except ExistingDraft as e:
+        return {'success': False, 'existing_draft': e.rec, 'error': str(e)}, 409
     except PossibleDuplicate as e:
         return {'success': False, 'possible_duplicate': e.rec, 'error': str(e)}, 409
     if on_job:
@@ -11526,6 +11550,8 @@ def h_doc_quote(actor, doc_id):
         res = create_draft_quote(doc_id, client_id, property_id, data.get('line_items') or sugg['line_items'],
                                  data.get('title') or sugg['title'], data.get('message') or '', actor,
                                  force=bool(data.get('force')))
+    except ExistingDraft as e:
+        return {'success': False, 'existing_draft': e.rec, 'error': str(e)}, 409
     except PossibleDuplicate as e:
         return {'success': False, 'possible_duplicate': e.rec, 'error': str(e)}, 409
     rem = data.get('remember') or {}
@@ -14315,9 +14341,30 @@ def _scada_row(r, today):
     return d
 
 
+def _scada_client_mismatch(conn, d):
+    """The row's renewal quote is under another Jobber client than the invoice issued/paid for that year (Corsa
+    pointing at Stock Development's #9203 while Corsa's #8909 was converted and invoiced, Nov 2026) - so it isn't
+    billed twice. {quote, quote_client, invoice, invoice_client, year} or None."""
+    q = d.get('quote')
+    q = json.loads(q or '{}') if isinstance(q, str) else (q or {})
+    year = q.get('year') or ''
+    num = str((d.get('years') or {}).get(year) or '').strip().lstrip('#')
+    if not q.get('number') or not re.fullmatch(r'\d{4,7}', num):
+        return None
+    qi = conn.execute("SELECT client_name FROM pump_jobber_items WHERE kind='quote' AND (number=? OR jobber_id=?)",
+                      (str(q['number']), q.get('id') or '-')).fetchone()
+    ii = conn.execute("SELECT client_name FROM pump_jobber_items WHERE kind='invoice' AND number=?", (num,)).fetchone()
+    qc, ic = (qi['client_name'] if qi else '') or '', (ii['client_name'] if ii else '') or ''
+    if not qc or not ic or qc == ic or _same_account(qc, ic):
+        return None
+    return {'quote': str(q['number']), 'quote_client': qc, 'invoice': num, 'invoice_client': ic, 'year': year}
+
+
 def scada_rows(conn):
     today = _today()
     out = [_scada_row(r, today) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+    for d in out:
+        d['client_mismatch'] = _scada_client_mismatch(conn, d)
     order = {'overdue': 0, 'due_soon': 1, 'awaiting_payment': 2, 'unknown': 3, 'current': 4, 'inactive': 5}
     out.sort(key=lambda d: (order.get(d['state'], 9), d.get('next_due_on') or '9999', d['client'].lower()))
     return out
@@ -14515,8 +14562,38 @@ def scada_year_invoices(conn, row, year):
             out.append({'number': it['number'], 'status': it['status'] or 'sent', 'uri': it['web_uri'] or ''})
             seen.add(it['number'])
     if re.fullmatch(r'#?\d{4,7}', num) and num.lstrip('#') not in seen:   # a note in the cell isn't an invoice
-        out.append({'number': num, 'status': 'issued', 'uri': ''})   # on the tab (only issued invoices are recorded)
+        it = conn.execute("SELECT status FROM pump_jobber_items WHERE kind='invoice' AND number=?", (num.lstrip('#'),)).fetchone()
+        if not (it and (it['status'] or '') in ('draft', 'voided', 'bad_debt')):
+            # On the tab - issued, unless the synced invoice says it's still a draft or was voided (Corsa #37401,
+            # Nov 2026: a draft blocked drafting Wettech's bill as "already invoiced").
+            out.append({'number': num, 'status': (it['status'] if it else '') or 'issued', 'uri': ''})
     return out
+
+
+def scada_year_drafts(conn, row, year):
+    """Draft invoices in Jobber for a SCADA site's renewal year: the tab's number when it's still a draft, and any
+    synced draft SCADA invoice the tab's matching gives that site. [{id, number, status, uri, total}]."""
+    num = str((json.loads(row['years'] or '{}') if isinstance(row['years'], str) else (row['years'] or {})).get(year) or '').strip().lstrip('#')
+    rows = [dict(r) for r in conn.execute('SELECT * FROM pump_scada_accounts')]
+    out = []
+    for it in conn.execute("SELECT jobber_id, number, status, web_uri, title, client_name, created_at, start_at, total "
+                           "FROM pump_jobber_items WHERE kind='invoice' AND status='draft'"):
+        mine = num and it['number'] == num
+        scada = re.search(r'\bscada\b', it['title'] or '', re.I) and \
+            scada_invoice_year(it['title'], (it['start_at'] or it['created_at'] or '')[:10], row.get('renewal_date') or '') == year and \
+            ((_scada_match(rows, it['client_name'] or '', it['title'] or '') or {}).get('id') == row['id'])
+        if mine or scada:
+            out.append({'id': it['jobber_id'], 'number': it['number'], 'status': 'draft', 'uri': it['web_uri'] or '',
+                        'total': it['total']})
+    return out
+
+
+class ExistingDraft(ValueError):
+    """The SCADA renewal's invoice already exists as a draft in Jobber: open it, or link it to the bill."""
+    def __init__(self, client, year, rec):
+        self.rec = rec
+        super().__init__(f"Draft #{rec['number']} already exists for {client}'s {year} SCADA renewal - open it in "
+                         "Jobber, or link it to this bill.")
 
 
 def scada_already_invoiced(conn, client_name, text):
@@ -16546,6 +16623,13 @@ def scada_find_renewals(force=False):
     try:
         rows = [r for r in scada_rows(conn) if r['active']]
         for r in rows:
+            mm = r.get('client_mismatch')
+            if mm:
+                add_todo(conn, f"scada-client:{r['id']}:{mm['quote']}",
+                         f"SCADA: {r['client']}'s quote #{mm['quote']} is under {mm['quote_client']}",
+                         f"Its {mm['year']} renewal is invoiced (#{mm['invoice']}) under {mm['invoice_client']}. Point the row at "
+                         f"that client's quote (Renewed… with the right quote #) so it isn't billed twice.",
+                         {'scada_id': r['id'], 'tab': 'scada', 'label': 'SCADA'})
             for num, ys in (r.get('duplicates') or {}).items():
                 add_todo(conn, f"scada-dup:{r['id']}:{num}", f"SCADA: invoice #{num} is under {' and '.join(ys)} - {r['client']}",
                          f"The same invoice can't be two years' renewal. Fix it on the SCADA tab: Renewed… with the right "
@@ -18929,7 +19013,37 @@ def pm_apply_match(doc_id, kind, number, actor):
             conn.commit()
         finally:
             conn.close()
+        link_job_invoice(cid, doc_id, it['jobber_id'], actor)
     return cid
+
+
+def link_job_invoice(cid, doc_id, job_id, actor):
+    """A vendor bill matched to a Jobber job that already has our invoice (Corsa, Nov 2026: Wettech #29386 on job
+    #14766 kept a blank invoice): that invoice goes on the Pumps job and its bill cards too - the one not on another
+    job, nearest the bill's date. Nothing changes in Jobber or in what's paid. Returns its # or None."""
+    conn = _conn()
+    try:
+        case = conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()
+        if not case or (json.loads(case['jobber'] or '{}').get('invoice') or {}).get('id'):
+            return None
+        d = conn.execute('SELECT doc_date, created_at FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        taken = {r[0] for r in conn.execute("SELECT json_extract(jobber, '$.invoice.id') FROM pump_cases WHERE id != ? "
+                                            "AND status != 'cancelled'", (cid,)) if r[0]}
+    finally:
+        conn.close()
+    try:
+        invs = [i for i in job_invoices(job_id) if i['status'] not in ('voided', 'bad_debt') and i['id'] not in taken]
+    except JobberError:
+        return None
+    if not invs:
+        return None
+    when = _iso_date((d['doc_date'] if d else '') or '') or ((d['created_at'] or '')[:10] if d else '') or _today().isoformat()
+    try:
+        pick = min(invs, key=lambda i: abs((date.fromisoformat(i['date'] or when) - date.fromisoformat(when)).days))
+    except ValueError:
+        pick = invs[0]
+    link_jobber_invoice(cid, pick['number'], actor)
+    return pick['number']
 
 
 def pm_match_reply():
