@@ -491,7 +491,8 @@ def _conn():
 # scan, the Jobber sync and other background work are never recorded.
 UNDO_TABLES = ('pump_cases', 'pump_docs', 'pump_issues', 'pump_events', 'pump_scada', 'pump_client_contacts',
                'pump_jobber_items', 'pump_site_aliases', 'pump_todos', 'pump_dive_sites', 'pump_scada_accounts',
-               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices', 'pump_maint_done')
+               'pump_maint_accounts', 'pump_todo_hidden', 'pump_maint_notices', 'pump_maint_done',
+               'pump_maint_invoices', 'pump_no_track')
 _UNDO_ACTION = contextvars.ContextVar('pump_undo_action', default=0)
 
 
@@ -2878,6 +2879,7 @@ def check_diver_billed(case_id, actor='Pumps'):
             return {'billed': True, 'invoice': j['invoice']}
         acct = next((a for a in accounts(conn) if a['name'] == case.get('client_name')), None) or {}
         client_id = case.get('jobber_client_id') or ((acct.get('pump') or {}).get('jobber_client_id'))
+        inside = bool((acct.get('lake') or {}).get('billed_inside'))
     finally:
         conn.close()
     found, err = None, ''
@@ -2895,6 +2897,15 @@ def check_diver_billed(case_id, actor='Pumps'):
                     recs = invoices_named(case.get('client_name') or doc.get('client_name') or '', lo, hi, client_id,
                                           labels=(doc.get('client_name'), doc.get('site')))
                 found = sorted(recs, key=lambda r: abs((date.fromisoformat(r['created']) - when).days))[0] if recs else None
+            if not found:
+                # Billed with Wettech's visit on the client's recurring job for the month, before Jordan's bill came
+                # (Nov 2026: Gulfshore's often arrives after Wettech's, and both go on one invoice).
+                y, m = bill_service_month(doc)
+                mb = month_billed(case.get('client_name') or doc.get('client_name') or '', y, m)
+                if mb and mb.get('invoice'):
+                    i = mb['invoice']
+                    found = {'id': i.get('id'), 'number': i.get('number'), 'status': i.get('status') or '',
+                             'uri': i.get('uri') or '', 'total': i.get('total')}
         except (JobberError, ValueError) as e:
             err = str(e)
     else:
@@ -2918,6 +2929,16 @@ def check_diver_billed(case_id, actor='Pumps'):
                          (_now_text(), actor, key))
             _event(conn, actor, 'billed out', f"Gulfshore{num} is on our Jobber invoice #{found['number']} to the client - "
                                               "Christian can pay it", case_id=case_id, doc_id=doc['id'])
+            if inside and not _state_get(f'pay_ok:{case_id}', conn=conn):
+                # Billed inside a larger invoice (Wild Blue): linked, and OK to pay.
+                _state_set(f'pay_ok:{case_id}', {'at': _now_text(), 'by': actor}, conn=conn)
+                _event(conn, actor, 'vendor bill OKd to pay', f"billed inside our invoice #{found['number']}",
+                       case_id=case_id)
+        elif inside:
+            # Billed inside a larger client invoice (the account's setting): no "not billed out yet" to-do - it's
+            # linked when that invoice comes.
+            conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
+                         (_now_text(), actor, key))
         else:
             amt = doc.get('total') if doc.get('total') is not None else doc.get('subtotal')
             who = case.get('client_name') or doc.get('client_name')
@@ -4378,7 +4399,26 @@ def sync_jobber(full=False, actor='system'):
         if st.get('state') == 'running':
             st.update(state='failed', finished_at=_now_text(), errors=(st.get('errors') or []) + [str(e)])
             _state_set('jobber_sync', st)
+            _log_sync_errors([f'sync stopped: {e}'])
         raise
+
+
+SYNC_LOG_KEEP = 30
+
+
+def _log_sync_errors(errors, at=None):
+    """Each sync error kept with the record it was about and when (Nov 2026: "1 errors" said nothing)."""
+    if not errors:
+        return
+    at = at or _now_text()
+    log = _state_get('jobber_sync_log') or []
+    for e in errors:
+        text = str(e)
+        rec, _, msg = text.partition(': ')
+        if not msg:
+            rec, msg = '', text
+        log.append({'at': at, 'record': rec[:120], 'message': msg[:500]})
+    _state_set('jobber_sync_log', log[-SYNC_LOG_KEEP:])
 
 
 def jobber_sync_state():
@@ -4391,7 +4431,8 @@ def jobber_sync_state():
                 st.update(state='interrupted', finished_at=_now_text(),
                           errors=(st.get('errors') or []) + ['The sync stopped part way (the app restarted) - run it again.'])
                 _state_set('jobber_sync', st)
-    return st
+                _log_sync_errors(['sync: stopped part way - the app restarted'])
+    return {**st, 'log': list(reversed(_state_get('jobber_sync_log') or []))}
 
 
 def _sync_search(conn_name, spec, status_field, term, full):
@@ -4637,6 +4678,14 @@ def _sync_jobber(full=False, actor='system'):
                 backfill_bill_duplicates()
             except Exception as e:
                 status['errors'].append(f'Bill duplicate check: {e}')
+            try:
+                refresh_maint_job_invoices()
+            except Exception as e:
+                status['errors'].append(f'Maintenance invoices: {e}')
+            try:
+                scada_find_renewals()
+            except Exception as e:
+                status['errors'].append(f'SCADA renewals in Jobber: {e}')
             status['errors'] += refresh_client_contacts(conn)
             conn.commit()
             try:
@@ -4656,6 +4705,7 @@ def _sync_jobber(full=False, actor='system'):
         for e in status['errors'][:20]:
             print(f'  ⚠ Pumps Jobber sync: {e}')
         _state_set('jobber_sync', status)
+        _log_sync_errors(status['errors'], status.get('finished_at'))
         return status
 
 
@@ -4776,6 +4826,17 @@ def jobber_record_gone(conn, kind, jid):
     return num
 
 
+def no_track_names(conn):
+    return [r[0] for r in conn.execute('SELECT name FROM pump_no_track')]
+
+
+def not_tracked_account(conn, it, names=None):
+    """A Jobber record for an account set "Not a Wettech job - don't track" (Nov 2026)."""
+    names = no_track_names(conn) if names is None else names
+    who = [x for x in (it.get('client_name'), it.get('property_label')) if x]
+    return any(_same_account(n, w) or site_name_matches(n, w) for n in names for w in who)
+
+
 def untracked_jobber_items(conn, others=False):
     """Open pump requests, approved quotes and one-off jobs made in Jobber that
     no item here follows yet and nobody has ignored - for our accounts only
@@ -4794,6 +4855,8 @@ def untracked_jobber_items(conn, others=False):
     # Irrigation work on a pump account (a Rain Bird controller, #9195) is not ours to act on.
     rows = [r for r in rows if not (r.get('category') not in ('pump', 'diver', 'filter', 'scada')
                                     and _irrigation_title(r.get('title')))]
+    nt = no_track_names(conn)
+    rows = [r for r in rows if not (nt and not_tracked_account(conn, r, nt))]
     return [r for r in rows if on_account_sheets(conn, r, names) != others]
 
 
@@ -11048,6 +11111,53 @@ def h_case_delete(actor, case_id):
         conn.close()
 
 
+@api('/cases/<int:case_id>/untrack', methods=('POST',))
+def h_case_untrack(actor, case_id):
+    """Not a Wettech job - don't track (Nov 2026): taken off Pumps (cancelled, kept with its history - Restore
+    brings it back) and its Jobber records aren't offered for tracking again. Nothing changes in Jobber."""
+    reason = str(_json().get('reason') or '').strip()[:300]
+    conn = _conn()
+    try:
+        if not conn.execute('SELECT 1 FROM pump_cases WHERE id=?', (case_id,)).fetchone():
+            return {'success': False, 'error': 'Not found'}, 404
+        conn.execute("UPDATE pump_cases SET status='cancelled', stage='cancelled', updated_at=? WHERE id=?",
+                     (_now_text(), case_id))
+        conn.execute("UPDATE pump_issues SET resolved_at=?, resolved_by=?, resolution=? WHERE case_id=? AND "
+                     "resolved_at IS NULL", (_now_text(), actor, 'Not a Wettech job - not tracked', case_id))
+        conn.execute('UPDATE pump_jobber_items SET ignored=1 WHERE case_id=?', (case_id,))
+        conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE done_at IS NULL AND "
+                     "json_extract(link, '$.case_id')=?", (_now_text(), actor, case_id))
+        _event(conn, actor, 'not tracked', 'Not a Wettech job - taken off Pumps' + (f': {reason}' if reason else ''),
+               case_id=case_id)
+        conn.commit()
+        return {}
+    finally:
+        conn.close()
+
+
+@api('/accounts/no_track', methods=('POST',))
+def h_account_no_track(actor):
+    """{"name", "on": true|false, "note"}: an account that isn't Wettech's pump work - its Jobber quotes, jobs and
+    requests are never tracked here."""
+    d = _json()
+    name = str(d.get('name') or '').strip()
+    if not name:
+        raise ValueError('Which account?')
+    on = d.get('on', True) not in (False, 0, '0', 'false')
+    conn = _conn()
+    try:
+        if on:
+            conn.execute('INSERT OR REPLACE INTO pump_no_track (name, note, set_by, set_at) VALUES (?,?,?,?)',
+                         (name, str(d.get('note') or '')[:300], actor or '', _now_text()))
+        else:
+            conn.execute('DELETE FROM pump_no_track WHERE name=?', (name,))
+        _event(conn, actor, 'account tracking', f"{name}: {'not a Wettech account - not tracked' if on else 'tracked again'}")
+        conn.commit()
+        return {'name': name, 'no_track': on}
+    finally:
+        conn.close()
+
+
 @api('/cases/<int:case_id>/restore', methods=('POST',))
 def h_case_restore(actor, case_id):
     """Un-cancel (Oct 2026: WetTech #29183 Rosewood was cancelled by mistake): back to open, where it was."""
@@ -11996,6 +12106,10 @@ def init_dive_tables(c):
                   jobber_client_id TEXT DEFAULT '',
                   updated_by TEXT DEFAULT '',
                   updated_at TEXT)''')
+    try:
+        c.execute('ALTER TABLE pump_dive_sites ADD COLUMN billed_inside INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_dive_emails (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   month TEXT,
@@ -12342,6 +12456,7 @@ def _scheduled_dive_email():
         print(f'  ⚠ Pumps: diver schedule not sent: {e}')
 
 
+# billed_inside: Gulfshore's filter cleaning is billed inside a larger client invoice (Wild Blue, Nov 2026).
 DIVE_FIELDS = ('name', 'equipment', 'address', 'diver_notes', 'months', 'status_note', 'month_note',
                'jobber_client_id', 'kind', 'joined', 'diver_cost', 'our_bill', 'naples_electric', 'follow_up',
                'gate_code')
@@ -12383,7 +12498,7 @@ def h_dive_site_save(actor):
         return _office_only(actor, "Changing the diver's sites")
     d = _json()
     vals = {k: str(d.get(k) or '').strip()[:1000] for k in DIVE_FIELDS if k in d}
-    for k in ('needs_dive', 'active'):
+    for k in ('needs_dive', 'active', 'billed_inside'):
         if k in d:
             vals[k] = 1 if d[k] in (True, 1, '1', 'true', 'yes', 'on') else 0
     if 'status' in d:
@@ -13551,6 +13666,15 @@ def _apply_renames_nov26(c, now):
                 c.execute(f'UPDATE OR IGNORE {table} SET {col}=? WHERE {col}=?', (new, old))
 
 
+def _apply_billed_inside_nov26(c, now):
+    """Once (Nov 24 2026, the office): Wild Blue's Gulfshore filter cleaning is billed inside a larger client
+    invoice - no "not billed out yet" to-do for it."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('billed_inside_nov26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    c.execute("UPDATE pump_dive_sites SET billed_inside=1 WHERE name='Wild Blue'")
+
+
 def _apply_former_nov26(c, now):
     """Once (Nov 3 2026, the office): "We are not tracking RIVIERA GOLF ESTATES #2 anymore" - a former account:
     off the diver list, the maintenance check and Jobber's auto-tracking. Its jobs and history stay."""
@@ -13917,11 +14041,14 @@ def init_account_tables(c):
     # Maintenance contracts we bill each month (the office's 2026 Monthly Billing
     # Checklist): one row per line - "Autumn Woods M/M $3,605", "Autumn Woods
     # parts" - with the months billed ({"2026": [1, 2, 3]}).
-    try:
-        # Each year's renewal invoice status in Jobber ({"2026": "awaiting_payment"}) - Nov 2026.
-        c.execute("ALTER TABLE pump_scada_accounts ADD COLUMN year_status TEXT DEFAULT '{}'")
-    except sqlite3.OperationalError:
-        pass
+    for col in ('year_status', 'renewal_refs', 'suggestion'):
+        # year_status: each year's renewal invoice status in Jobber ({"2026": "awaiting_payment"}); renewal_refs:
+        # each year's Jobber quote/job/invoice # ({"2026": {"quote": "8909", "job": "...", "invoice": "..."}});
+        # suggestion: a renewal found in Jobber to confirm (Nov 2026).
+        try:
+            c.execute(f"ALTER TABLE pump_scada_accounts ADD COLUMN {col} TEXT DEFAULT ''")
+        except sqlite3.OperationalError:
+            pass
     c.execute('''CREATE TABLE IF NOT EXISTS pump_contracts (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   account TEXT NOT NULL,
@@ -13962,6 +14089,22 @@ def init_account_tables(c):
                   done_by TEXT DEFAULT '',
                   done_at TEXT,
                   UNIQUE(month, account, vendor))''')
+    # Our invoice # for a maintenance visit, typed by hand when the Jobber sync can't find it (Nov 2026).
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_invoices (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  month TEXT NOT NULL,
+                  account TEXT NOT NULL,
+                  number TEXT DEFAULT '',
+                  set_by TEXT DEFAULT '',
+                  set_at TEXT,
+                  UNIQUE(month, account))''')
+    # Accounts that aren't Wettech's pump work: never tracked from Jobber (Nov 2026).
+    c.execute('''CREATE TABLE IF NOT EXISTS pump_no_track (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  name TEXT NOT NULL UNIQUE,
+                  note TEXT DEFAULT '',
+                  set_by TEXT DEFAULT '',
+                  set_at TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS pump_maint_notices (
                   id INTEGER PRIMARY KEY AUTOINCREMENT,
                   month TEXT NOT NULL,
@@ -14054,6 +14197,7 @@ def init_account_tables(c):
     _drop_irrigation_quote_items(c, now)
     _apply_maint_vendors(c, now)
     _apply_former_nov26(c, now)
+    _apply_billed_inside_nov26(c, now)
     _apply_renames_nov26(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
@@ -14116,6 +14260,11 @@ def _scada_row(r, today):
     except ValueError:
         q = {}
     d['renewal_quote'] = q if q.get('number') and q.get('year') == d['next_due_on'][:4] else None
+    try:
+        d['renewal_refs'] = json.loads(d.get('renewal_refs') or '{}')
+        d['suggestion'] = json.loads(d.get('suggestion') or 'null')
+    except ValueError:
+        d['renewal_refs'], d['suggestion'] = {}, None
     d['client_name'], d['site'] = d['client'], ''
     if not d['active']:
         d['state'] = 'inactive'
@@ -14271,9 +14420,22 @@ def record_scada_invoice(conn, inv):
     now = _now_text()
     for r in rows:
         ys = json.loads(r['years'] or '{}')
-        y = next((k for k, v in ys.items() if str(v).strip() == number), None)
-        if y is None:
+        hits = sorted(k for k, v in ys.items() if str(v).strip() == number)
+        if not hits:
             continue
+        if len(hits) > 1:
+            # The same invoice in two years (CH Realty #37209 under 2025 and 2026, Nov 2026): it's the year it counts
+            # for - or the latest - only.
+            keep = year if (row is not None and r['id'] == row['id'] and year in hits) else hits[-1]
+            for k in hits:
+                if k != keep:
+                    ys.pop(k)
+            conn.execute('UPDATE pump_scada_accounts SET years=?, updated_by=?, updated_at=? WHERE id=?',
+                         (json.dumps(ys), 'jobber sync', now, r['id']))
+            _event(conn, 'jobber sync', 'SCADA renewal year', f"{r['client']}: invoice #{number} kept under {keep} "
+                                                              f"only (it was under {', '.join(hits)})")
+            hits = [keep]
+        y = hits[0]
         # Already on the tab: keep its status current (Awaiting payment / paid), and a renewal filed under the
         # year before - invoiced a few weeks early - goes to its own year when that one is empty (Nov 2026).
         moved = row is not None and r['id'] == row['id'] and y != year and year > y and not str(ys.get(year) or '').strip()
@@ -14445,15 +14607,57 @@ def h_scada_update(actor, sid):
             conn.commit()
             return {'case_id': cid}
         if d.get('action') == 'renewed':
-            value = str(d.get('value') or '').strip()
-            if not value:
-                raise ValueError('Give the invoice # (or a note such as "No charge")')
+            # {"year", "quote", "job", "invoice" (or "value": invoice # or a note)} - Nov 2026: quote and job too.
+            value = str(d.get('invoice') or d.get('value') or '').strip().lstrip('#')
+            quote, job = (str(d.get(k) or '').strip().lstrip('#')[:40] for k in ('quote', 'job'))
+            if not (value or quote or job):
+                raise ValueError('Give the invoice #, quote # or job # (or a note such as "No charge")')
             due = datetime.strptime(cur['next_due_on'], '%Y-%m-%d').date() if cur['next_due_on'] else _today()
+            year = str(d.get('year') or due.year).strip()[:4]
+            if not re.fullmatch(r'20\d\d', year):
+                raise ValueError('The year is a year, e.g. 2026')
             years = cur['years']
-            years[str(due.year)] = value[:120]
-            conn.execute('UPDATE pump_scada_accounts SET years=?, renewal_date=?, updated_by=?, updated_at=? WHERE id=?',
-                         (json.dumps(years), _anniversary(due, due.year + 1).isoformat(), actor, _now_text(), sid))
-            _event(conn, actor, 'SCADA renewed', f"{row['client']} {due.year}: {value}")
+            refs = json.loads(row['renewal_refs'] or '{}')
+            ref = {**(refs.get(year) or {}), **{k: v for k, v in (('quote', quote), ('job', job), ('invoice', value)) if v}}
+            refs[year] = ref
+            sets, vals = ['renewal_refs=?'], [json.dumps(refs)]
+            if value:
+                for y in [y for y, v in years.items() if str(v).strip() == value[:120] and y != year]:
+                    years.pop(y)   # one invoice, one year (CH Realty #37209 showed under 2025 and 2026)
+                years[year] = value[:120]
+                sets += ['years=?']
+                vals += [json.dumps(years)]
+                if int(year) >= due.year:
+                    sets += ['renewal_date=?']
+                    vals += [_anniversary(due, int(year) + 1).isoformat()]
+            if quote:
+                q = json.loads(row['quote'] or '{}') if row['quote'] else {}
+                if q.get('number') != quote:
+                    it = conn.execute("SELECT jobber_id, status, web_uri FROM pump_jobber_items WHERE kind='quote' "
+                                      "AND number=?", (quote,)).fetchone()
+                    q = {'year': year, 'number': quote, 'id': it['jobber_id'] if it else '',
+                         'status': (it['status'] if it else '') or 'approved', 'uri': (it['web_uri'] if it else '') or '',
+                         'at': _now_text(), 'by': actor}
+                else:
+                    q['year'] = year
+                sets += ['quote=?']
+                vals += [json.dumps(q)]
+            if d.get('suggestion_used'):
+                sets += ['suggestion=?']
+                vals += ['']
+            conn.execute(f"UPDATE pump_scada_accounts SET {', '.join(sets)}, updated_by=?, updated_at=? WHERE id=?",
+                         (*vals, actor, _now_text(), sid))
+            _event(conn, actor, 'SCADA renewed', f"{row['client']} {year}: " +
+                   ', '.join(f'{k} #{v}' for k, v in (('quote', quote), ('job', job), ('invoice', value)) if v))
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key LIKE ? AND done_at IS NULL",
+                         (_now_text(), actor, f'scada-found:{sid}:%'))
+            conn.commit()
+            return {'scada': scada_rows(conn)}
+        if d.get('action') == 'dismiss_suggestion':
+            conn.execute("UPDATE pump_scada_accounts SET suggestion='' WHERE id=?", (sid,))
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key LIKE ? AND done_at IS NULL",
+                         (_now_text(), actor, f'scada-found:{sid}:%'))
+            _event(conn, actor, 'SCADA suggestion dismissed', row['client'])
             conn.commit()
             return {'scada': scada_rows(conn)}
         sets, vals = [], []
@@ -15503,6 +15707,9 @@ def auto_track_approved(conn, actor='Jobber sync'):
                 _link_item(conn, it['jobber_id'], cid, actor)
                 _set_step(conn, cid, 'client_quote', at=(it['created_at'] or '')[:10] or None, by=actor)
                 _set_step(conn, cid, 'client_approved', at=(it['updated_at'] or '')[:10] or None, by=actor)
+            elif quote_work_by(conn, it['jobber_id']) == 'ours':
+                # Our own crew's pump work, not Wettech's: not followed here (Nov 2026).
+                continue
             elif it.get('category') in ('pump', 'diver', 'filter', 'scada') or _quote_is_pump_work(it['jobber_id']) \
                     or (_tracked_account(conn, it) and not _irrigation_title(it.get('title'))):
                 # A pump account's quote is followed unless it reads as irrigation work (Huntington Lakes Master's
@@ -16208,6 +16415,79 @@ def scada_convert_todos():
         conn.close()
 
 
+_SCADA_RANK = {'approved': 0, 'converted': 0, 'active': 1, 'requires_invoicing': 1, 'upcoming': 1, 'today': 1,
+               'late': 1, 'awaiting_response': 2, 'changes_requested': 2, 'draft': 3}
+
+
+def scada_find_renewals(force=False):
+    """Once a day: for each SCADA site whose coming renewal isn't invoiced yet, an approved Jobber quote or a job
+    whose title or lines say SCADA, at the site's client - suggested on the row and in To do, to confirm with one
+    click (Corsa, Nov 2026: approved #8909 was missed - the row pointed at a stale draft #9203 under another
+    client). Nothing is recorded until someone (or Pump Manager) confirms it."""
+    day = _today().isoformat()
+    if not force and (_state_get('scada_find_day') or '') == day:
+        return []
+    _state_set('scada_find_day', day)
+    if not jobber_status()['connected']:
+        return []
+    conn = _conn()
+    try:
+        rows = [r for r in scada_rows(conn) if r['active'] and not r.get('complimentary')]
+    finally:
+        conn.close()
+    since = (_today() - timedelta(days=400)).isoformat()
+    found = []
+    for r in rows:
+        year = (r['next_due_on'] or '')[:4]
+        if not year or str(r['years'].get(year) or '').strip():
+            continue
+        names = [n.strip() for n in re.split(r'[;,\n]', r.get('jobber_names') or '') if n.strip()] + [r['client']]
+        mine = lambda client: any(_same_account(n, client or '') or fuzzy_has(_core_name(n), client or '') for n in names)
+        cands = []
+        for n in names:
+            core = _core_name(n)
+            if len(core) < 3:
+                continue
+            for kind, conn_name, num, st in (('quote', 'quotes', 'quoteNumber', 'quoteStatus'),
+                                             ('job', 'jobs', 'jobNumber', 'jobStatus')):
+                q = (f'query($q: String) {{ {conn_name}(first: 15, searchTerm: $q) {{ nodes {{ id {num} title {st} '
+                     'createdAt jobberWebUri client { name } lineItems(first: 10) { nodes { name description } } } } }')
+                try:
+                    data = jobber_gql(q, {'q': core})
+                except JobberError:
+                    continue
+                for x in (data.get(conn_name) or {}).get('nodes') or []:
+                    text = ' '.join([x.get('title') or ''] + [f"{li.get('name') or ''} {li.get('description') or ''}"
+                                                              for li in (x.get('lineItems') or {}).get('nodes') or []])
+                    status = (x.get(st) or '').lower()
+                    if not re.search(r'\bscada\b', text, re.I) or (x.get('createdAt') or '')[:10] < since or \
+                            status not in _SCADA_RANK or not mine((x.get('client') or {}).get('name')):
+                        continue
+                    cands.append({'kind': kind, 'id': x['id'], 'number': str(x.get(num) or ''), 'status': status,
+                                  'uri': x.get('jobberWebUri') or '', 'client': (x.get('client') or {}).get('name') or '',
+                                  'created': (x.get('createdAt') or '')[:10], 'year': year})
+        if not cands:
+            continue
+        best = sorted(cands, key=lambda c: (_SCADA_RANK[c['status']], c['created'] and -int(c['created'].replace('-', ''))))[0]
+        cur = r.get('renewal_quote') or {}
+        if cur.get('number') == best['number'] or _SCADA_RANK[best['status']] > 2 or \
+                (cur.get('number') and _SCADA_RANK.get(cur.get('status') or '', 9) <= _SCADA_RANK[best['status']]):
+            continue   # nothing better than what the row has
+        conn = _conn()
+        try:
+            conn.execute('UPDATE pump_scada_accounts SET suggestion=? WHERE id=?', (json.dumps(best), r['id']))
+            what = f"Jobber {best['kind']} #{best['number']} ({best['status'].replace('_', ' ')}, {best['client']})"
+            add_todo(conn, f"scada-found:{r['id']}:{best['number']}", f"SCADA renewal in Jobber - {r['client']}: {what}",
+                     f"Its {year} renewal isn't invoiced here. {what} says SCADA - confirm it on the SCADA tab "
+                     f"(Use it) or dismiss it" + (f"; the row had #{cur.get('number')} ({cur.get('status')})" if cur.get('number') else '') + '.',
+                     {'scada_id': r['id'], 'uri': best['uri'], 'tab': 'scada', 'label': 'SCADA'})
+            conn.commit()
+        finally:
+            conn.close()
+        found.append((r['id'], best['number']))
+    return found
+
+
 def existing_scada_quote(r):
     """A SCADA renewal quote the client already has in Jobber, made in the last SCADA_QUOTE_DAYS
     days and not archived or declined (Coras, Oct 2026: quoted already, yet a to-do to quote it):
@@ -16220,12 +16500,15 @@ def existing_scada_quote(r):
                                                   for n in names))
     conn = _conn()
     try:
-        for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' ORDER BY created_at DESC"):
-            if ok(it['title'], it['status'], it['created_at'], it['client_name']):
-                return {'id': it['jobber_id'], 'number': it['number'], 'status': (it['status'] or '').lower(),
-                        'uri': it['web_uri'] or ''}
+        hits = [it for it in conn.execute("SELECT * FROM pump_jobber_items WHERE kind='quote' ORDER BY created_at DESC")
+                if ok(it['title'], it['status'], it['created_at'], it['client_name'])]
     finally:
         conn.close()
+    if hits:
+        # An approved quote before a newer draft (Corsa #8909 approved vs a stale draft #9203, Nov 2026).
+        it = sorted(hits, key=lambda x: _SCADA_RANK.get((x['status'] or '').lower(), 9))[0]
+        return {'id': it['jobber_id'], 'number': it['number'], 'status': (it['status'] or '').lower(),
+                'uri': it['web_uri'] or ''}
     if not jobber_status()['connected']:
         return None
     for n in names:
@@ -17235,7 +17518,11 @@ def h_account_history(actor):
     """?name=<account> - every to-do and job the client has had."""
     conn = _conn()
     try:
-        return account_history(conn, (request.args.get('name') or '').strip())
+        name = (request.args.get('name') or '').strip()
+        out = account_history(conn, name)
+        if isinstance(out, dict):
+            out['no_track'] = bool(conn.execute('SELECT 1 FROM pump_no_track WHERE name=?', (name,)).fetchone())
+        return out
     finally:
         conn.close()
 
@@ -17314,6 +17601,49 @@ def site_name_matches(a, b):
     return all(any(_tok_eq(w, x) for x in big) for w in small)
 
 
+MAINT_INVOICES_EVERY_H = 6
+
+
+def refresh_maint_job_invoices(force=False):
+    """Every pump account's maintenance job's invoices, from Jobber, into the synced list with their job - so a
+    visit shows our invoice (Sunshine Lake Park #37235, Evergreen #37206). At most every few hours."""
+    last = _state_get('maint_job_invoices_at') or ''
+    if not force and last and last > (_now() - timedelta(hours=MAINT_INVOICES_EVERY_H)).strftime('%Y-%m-%d %H:%M:%S'):
+        return 0
+    conn = _conn()
+    try:
+        accts = [dict(r) for r in conn.execute("SELECT name, jobber_job_id, jobber_client_id FROM pump_maint_accounts "
+                                               "WHERE active=1 AND COALESCE(jobber_job_id, '') != ''")]
+    finally:
+        conn.close()
+    n = 0
+    for a in accts:
+        try:
+            invs = job_invoices(a['jobber_job_id'])
+        except JobberError:
+            continue
+        conn = _conn()
+        try:
+            for i in invs:
+                conn.execute('''INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id,
+                                  client_name, total, created_at, updated_at, start_at, web_uri, category, job_id,
+                                  synced_at, ignored) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)
+                                ON CONFLICT(jobber_id) DO UPDATE SET status=excluded.status, total=excluded.total,
+                                  job_id=excluded.job_id, number=excluded.number,
+                                  title=COALESCE(NULLIF(pump_jobber_items.title, ''), excluded.title),
+                                  start_at=COALESCE(NULLIF(pump_jobber_items.start_at, ''), excluded.start_at),
+                                  synced_at=excluded.synced_at''',
+                             (i['id'], 'invoice', i['number'], i['subject'], i['status'], a['jobber_client_id'] or '',
+                              a['name'], i['total'], i['date'], i['date'], i['date'], i['uri'], 'pump',
+                              a['jobber_job_id'], _now_text()))
+                n += 1
+            conn.commit()
+        finally:
+            conn.close()
+    _state_set('maint_job_invoices_at', _now_text())
+    return n
+
+
 def maint_schedule(conn, month_date):
     """Every maintenance visit due in a month, one row per account and vendor."""
     key = month_date.strftime('%Y-%m')
@@ -17325,6 +17655,11 @@ def maint_schedule(conn, month_date):
     visits = [json.loads(r['link'] or '{}') for r in conn.execute("SELECT link FROM pump_todos WHERE kind='visit'")]
     done_by_hand = {(r['account'], r['vendor']): dict(r) for r in
                     conn.execute('SELECT * FROM pump_maint_done WHERE month=?', (key,))}
+    typed_inv = {r['account']: dict(r) for r in conn.execute('SELECT * FROM pump_maint_invoices WHERE month=?', (key,))
+                 if (r['number'] or '').strip()}
+    our_invs = [dict(r) for r in conn.execute(
+        "SELECT number, status, title, start_at, created_at, job_id, client_id, web_uri FROM pump_jobber_items "
+        "WHERE kind='invoice' AND COALESCE(job_id, '') != '' AND status NOT IN ('voided', 'bad_debt')")]
     # A quarterly visit made a month early or late is still the quarter's (FGCU PGA, University Village, Nov 2026):
     # its bill or report counts from the month before to the month after.
     prev = (month_date.replace(day=1) - timedelta(days=1)).replace(day=1).isoformat()
@@ -17370,9 +17705,30 @@ def maint_schedule(conn, month_date):
             billed = next((b['date'] for b in bills if b['vendor'] == vendor and window(b['date']) and (
                 _is_account(names, b['client_name']) or any(site_name_matches(x, b['client_name']) or
                                                             site_name_matches(x, b['site']) for x in names))), '')
+            # Our invoice to the client for the visit (Nov 2026): on the account's Jobber job, for the month - or
+            # typed by hand. Separate from the vendor's invoice to us (billed).
+            ours = None
+            job_id = (p or {}).get('jobber_job_id') or ''
+            if a['name'] in typed_inv:
+                t = typed_inv[a['name']]
+                ours = {'number': t['number'].strip().lstrip('#'), 'status': '', 'uri': '', 'how': 'by hand'}
+            elif job_id:
+                for inv in our_invs:
+                    ym = invoice_month(inv)
+                    if inv['job_id'] == job_id and ym and window(f'{ym[0]:04d}-{ym[1]:02d}-15'):
+                        ours = {'number': inv['number'], 'status': inv['status'] or '', 'uri': inv['web_uri'] or '',
+                                'how': 'jobber'}
+                        break
+            done = done_by_hand.get((a['name'], vendor))
+            visit_done = bool(done or ours or billed or report)
+            if not n and visit_done:
+                # Done or billed: told, whatever the list says (Nov 2026 - finished visits showed "not told").
+                n = {'notified_at': '', 'notified_by': '', 'note': '', 'auto': True,
+                     'how': ('our invoice #' + ours['number']) if ours else
+                            f"{vendor}'s invoice in" if billed else 'report in' if report else 'visit done'}
             rows.append({'account': a['name'], 'vendor': vendor, 'what': what, 'where': where, 'hold': hold,
                          'notified': n, 'approved': approved, 'report': report, 'billed': billed, 'frequency': freq,
-                         'done': done_by_hand.get((a['name'], vendor))})
+                         'done': done, 'our_invoice': ours, 'visit_done': visit_done})
     rows.sort(key=lambda r: (bool(r['notified']), r['vendor'], r['account'].lower()))
     return rows
 
@@ -17482,6 +17838,31 @@ def h_maint_schedule(actor):
     conn = _conn()
     try:
         return _schedule_payload(conn, _month_arg(request.args.get('month')))
+    finally:
+        conn.close()
+
+
+@api('/maint/our_invoice', methods=('POST',))
+def h_maint_our_invoice(actor):
+    """{"month": "YYYY-MM", "account", "number"}: our invoice # for the account's visit that month, when the
+    Jobber sync can't find it ("" clears it)."""
+    d = _json()
+    month_date = _month_arg(d.get('month'))
+    name, number = str(d.get('account') or '').strip(), str(d.get('number') or '').strip().lstrip('#')[:40]
+    if not name:
+        raise ValueError('Which account?')
+    key = month_date.strftime('%Y-%m')
+    conn = _conn()
+    try:
+        if number:
+            conn.execute('INSERT OR REPLACE INTO pump_maint_invoices (month, account, number, set_by, set_at) '
+                         'VALUES (?,?,?,?,?)', (key, name, number, actor or '', _now_text()))
+        else:
+            conn.execute('DELETE FROM pump_maint_invoices WHERE month=? AND account=?', (key, name))
+        _event(conn, actor, f"{month_date.strftime('%B')} maintenance invoice",
+               f'{name}: ' + (f'our invoice #{number}' if number else 'cleared'))
+        conn.commit()
+        return _schedule_payload(conn, month_date)
     finally:
         conn.close()
 
@@ -17871,9 +18252,25 @@ PM_AGENT_ACTIONS = {
                  {'case_id': 'the item', 'step': ' | '.join(STEP_KEYS), 'value': 'YYYY-MM-DD (done that day) | "" (not done) | "na" (not needed)'}),
     'link_quote': ('Link a synced Jobber quote to an item (replaces an archived or wrong-client one)',
                    {'case_id': 'the item', 'number': 'the Jobber quote #'}),
+    'link_invoice': ('Link our Jobber invoice to an item (its vendor bill)', {'case_id': 'the item', 'number': 'our Jobber invoice #'}),
+    'visit_done': ("Mark a maintenance visit done (or not)", {'account': 'account name', 'vendor': 'Wettech | Gulfshore',
+                                                              'month': 'YYYY-MM', 'done': 'true | false'}),
+    'our_invoice': ("Set our invoice # for an account's maintenance visit", {'account': 'account name', 'month': 'YYYY-MM',
+                                                                           'number': 'our invoice # ("" clears it)'}),
+    'told': ('Mark the vendor told (or not) of a maintenance visit', {'account': 'account name', 'vendor': 'Wettech | Gulfshore',
+                                                                     'month': 'YYYY-MM', 'told': 'true | false', 'how': 'optional'}),
+    'scada_renewal': ('Record a SCADA renewal', {'scada_id': 'the SCADA row (or client)', 'year': 'YYYY',
+                                                 'quote': 'Jobber quote #', 'job': 'Jobber job #', 'invoice': 'our invoice # or a note'}),
+    'ok_to_pay': ('Say a vendor bill can be paid (never marks it paid)', {'case_id': 'the item', 'undo': 'true to take it back'}),
+    'dismiss_todo': ('Tick a to-do done', {'todo_id': 'the to-do'}),
+    'create_todo': ('Add a to-do', {'title': 'what needs doing', 'detail': 'optional', 'due_on': 'YYYY-MM-DD (optional)'}),
+    'untrack': ("Take an item off Pumps - not a Wettech job (soft: cancelled, kept, can be restored)",
+                {'case_id': 'the item', 'reason': 'optional'}),
+    'no_track_account': ("Set an account not tracked (or tracked again)", {'account': 'account name', 'on': 'true | false'}),
 }
 # Never through the agent API, whatever the action turns into.
-_AGENT_NEVER = re.compile(r'/(delete|paid|pay_ok|unpaid|hold|send|[a-z_]*email)(/|$)|/bills_to_pay|/undo', re.I)
+# (OK to pay is allowed - Nov 2026: it says a bill may be paid; marking it paid is not.)
+_AGENT_NEVER = re.compile(r'/(delete|paid|unpaid|hold|send|[a-z_]*email)(/|$)|/bills_to_pay/(?!pay_ok$)|/undo', re.I)
 
 
 def agent_action(conn, a):
@@ -17891,6 +18288,74 @@ def agent_action(conn, a):
     if t in ('add_note', 'set_step', 'link_quote') or (t == 'link' and str(a.get('kind') or '').lower() == 'bill'):
         if not row:
             raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
+    truth = lambda k, dflt=True: str(a.get(k, dflt)).lower() not in ('false', '0', 'no', '')
+    month = str(a.get('month') or '').strip()[:7]
+
+    def account():
+        name = str(a.get('account') or '').strip()
+        accts = [x['name'] for x in accounts(conn)]
+        hit = next((x for x in accts if x == name), None) or next((x for x in accts if _same_account(x, name)), None)
+        if not hit:
+            raise ValueError(f'No account "{name[:60]}"')
+        return hit
+    if t in ('visit_done', 'our_invoice', 'told') and not re.fullmatch(r'20\d\d-\d\d', month):
+        raise ValueError('month is YYYY-MM')
+    if t == 'visit_done':
+        acc, vendor = account(), str(a.get('vendor') or 'Wettech')
+        return {'label': f"{acc} {month} {vendor} visit {'done' if truth('done') else 'not done'}", 'method': 'POST',
+                'path': '/maint/done', 'body': {'month': month, 'vendor': vendor, 'account': acc, 'done': truth('done')}}
+    if t == 'our_invoice':
+        acc, num = account(), str(a.get('number') or '').strip().lstrip('#')
+        return {'label': f"{acc} {month}: our invoice " + (f'#{num}' if num else 'cleared'), 'method': 'POST',
+                'path': '/maint/our_invoice', 'body': {'month': month, 'account': acc, 'number': num}}
+    if t == 'told':
+        acc, vendor = account(), str(a.get('vendor') or 'Wettech')
+        return {'label': f"{vendor} {'told' if truth('told') else 'not told'} of {acc}'s {month} visit", 'method': 'POST',
+                'path': '/maint/notified', 'body': {'month': month, 'vendor': vendor, 'accounts': [acc],
+                                                    'notified': truth('told'), 'how': str(a.get('how') or 'Pump Manager')[:100]}}
+    if t == 'scada_renewal':
+        sid = str(a.get('scada_id') or '').strip()
+        rows = [dict(r) for r in conn.execute('SELECT id, client FROM pump_scada_accounts')]
+        r = next((x for x in rows if str(x['id']) == sid), None) or \
+            next((x for x in rows if sid and (x['client'] == sid or _same_account(x['client'], sid))), None)
+        if not r:
+            raise ValueError(f'No SCADA row "{sid[:60]}"')
+        body = {'action': 'renewed', **{k: str(a.get(k) or '') for k in ('year', 'quote', 'job', 'invoice') if a.get(k)}}
+        return {'label': f"SCADA renewal {r['client']} {body.get('year', '')}".strip(), 'method': 'POST',
+                'path': f"/scada/{r['id']}", 'body': body}
+    if t == 'link_invoice':
+        if not row or not num:
+            raise ValueError('Which item and invoice #?')
+        return {'label': f'Link our invoice #{num} to {name}', 'method': 'POST', 'path': f"/cases/{row['id']}/jobber_invoice",
+                'body': {'number': num}}
+    if t == 'ok_to_pay':
+        if not row:
+            raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
+        undo = truth('undo', False)
+        return {'label': f"{'Not OK' if undo else 'OK'} to pay {name}'s vendor bill", 'method': 'POST',
+                'path': '/bills_to_pay/pay_ok', 'body': {'case_ids': [row['id']], 'undo': undo}}
+    if t == 'dismiss_todo':
+        tid = str(a.get('todo_id') or '').strip()
+        t_row = conn.execute('SELECT id, title FROM pump_todos WHERE id=?', (int(tid),)).fetchone() if tid.isdigit() else None
+        if not t_row:
+            raise ValueError(f'No to-do {tid or "(none given)"}')
+        return {'label': f"To-do done: {t_row['title'][:80]}", 'method': 'POST', 'path': f"/todos/{t_row['id']}/done",
+                'body': {'done': True}}
+    if t == 'create_todo':
+        title = str(a.get('title') or '').strip()[:300]
+        if not title:
+            raise ValueError('Say what needs doing')
+        return {'label': f'New to-do: {title[:80]}', 'method': 'POST', 'path': '/todos',
+                'body': {'title': title, 'detail': str(a.get('detail') or '')[:2000], 'due_on': str(a.get('due_on') or '')}}
+    if t == 'untrack':
+        if not row:
+            raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
+        return {'label': f'Not a Wettech job - take {name} off Pumps', 'method': 'POST', 'path': f"/cases/{row['id']}/untrack",
+                'body': {'reason': str(a.get('reason') or '')[:300]}}
+    if t == 'no_track_account':
+        acc = account()
+        return {'label': f"{acc}: {'not tracked' if truth('on') else 'tracked again'}", 'method': 'POST',
+                'path': '/accounts/no_track', 'body': {'name': acc, 'on': truth('on')}}
     if t == 'add_note':
         text = str(a.get('text') or a.get('note') or '').strip()[:1000]
         if not text:
@@ -17989,8 +18454,13 @@ def run_agent_action(a):
 
 
 def _agent_ok():
-    return bool(PUMP_MANAGER_WEBHOOK_KEY) and hmac.compare_digest(request.headers.get('Authorization', ''),
-                                                                   f'Bearer {PUMP_MANAGER_WEBHOOK_KEY}')
+    """Pump Manager's key: PUMP_MANAGER_WEBHOOK_KEY (or the PUMP_APP_REPLY_TOKEN it already answers with), as
+    "Authorization: Bearer <key>", the bare key, or X-Api-Key - spaces around it ignored (Nov 2026: 401s)."""
+    keys = [k.strip() for k in (PUMP_MANAGER_WEBHOOK_KEY, PUMP_APP_REPLY_TOKEN) if (k or '').strip()]
+    auth = (request.headers.get('Authorization') or '').strip()
+    given = [auth[7:].strip() if auth.lower().startswith('bearer ') else auth,
+             (request.headers.get('X-Api-Key') or '').strip()]
+    return any(g and hmac.compare_digest(g, k) for g in given for k in keys)
 
 
 def _agent_view(fn):
@@ -18119,7 +18589,23 @@ def agent_undo():
         return {'success': False, 'error': str(e)}, 409
 
 
+def agent_index():
+    """What the agent API offers."""
+    return {'endpoints': [f'{",".join(m)} /pumps/api/agent{p}' for p, m, _ in AGENT_ROUTES],
+            'actions': list(PM_AGENT_ACTIONS), 'auth': 'Authorization: Bearer <PUMP_MANAGER_WEBHOOK_KEY>'}
+
+
+def agent_scada():
+    conn = _conn()
+    try:
+        return {'scada': scada_rows(conn)}
+    finally:
+        conn.close()
+
+
 AGENT_ROUTES = (
+    ('', ('GET',), agent_index),
+    ('/scada', ('GET',), agent_scada),
     ('/jobs', ('GET',), agent_jobs),
     ('/jobs/<int:case_id>', ('GET',), agent_job),
     ('/bills', ('GET',), agent_bills),

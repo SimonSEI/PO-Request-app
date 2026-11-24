@@ -365,6 +365,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button> <button class="btn s" onclick="showRecentFiles()" title="What happened to each emailed file">Recent files</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
   <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}{% if jobber.broken %}<b class="bad" title="{{ jobber.broken }}">disconnected - Jobber stopped accepting the app's sign-in</b> {% endif %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">{{ 'Reconnect' if jobber.broken else 'Connect' }} Jobber</a>{% else %}<b class="warn">not set up</b>{% endif %}</span></div>
   <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the To do list and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech and Gulfshore quotes, invoices and reports; anything it can't read waits in the To do list){% endif %}</div>
+  <div id="syncErrors" class="hide"></div>
   <div>Matching bills to jobs: {% if grok %}<b class="ok">Grok on</b> (when no PO, quote # or email ties a vendor bill to a job){% else %}<span class="note">by PO, quote # and client only - set XAI_API_KEY to let Grok match the rest</span>{% endif %}</div>
   <div>Daily email: <span id="digestInfo">to {{ digest_to }} at {{ digest_hour }}am on weekdays</span>
     <button class="btn s" onclick="previewDigest()">Preview</button></div>
@@ -1077,7 +1078,7 @@ function renderCase(){
       <select class="btn" onchange="linkMenu(${c.id}, this)" title="Tie a Jobber quote, invoice or job to this item"><option value="">🔗 Link Jobber…</option><option value="quote">${J.quote ? 'A different Jobber quote' : 'A Jobber quote'}</option><option value="invoice">${J.invoice ? 'A different Jobber invoice' : 'A Jobber invoice'}</option><option value="request">${J.request ? 'A different Jobber request' : 'A Jobber request (service call)'}</option><option value="job">${J.job ? 'A different Jobber job' : 'A Jobber job'}</option>${J.invoice || c.sei_invoice_number ? `<option value="unlink_invoice">Unlink invoice #${esc((J.invoice || {}).number || c.sei_invoice_number)} (wrong one)</option>` : ''}</select>
       <button class="btn" onclick="uploadForCase()">⬆ Add document</button>
       <button class="btn" onclick="addNote()">✎ Add note</button>
-      ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button>` : c.status === 'cancelled' ? `<button class="btn p" onclick="caseRestore(${c.id})">↺ Restore</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
+      ${c.status === 'open' ? `<button class="btn p" onclick="caseDone(${c.id})">✓ Mark done</button><button class="btn danger" onclick="caseRemove(${c.id})">✕ Remove</button><button class="btn" title="Our own work or irrigation - take it off Pumps and don't track its Jobber records again" onclick="caseUntrack(${c.id})">Not a Wettech job - don't track</button>` : c.status === 'cancelled' ? `<button class="btn p" onclick="caseRestore(${c.id})">↺ Restore</button>` : `<button class="btn" onclick="caseReopen(${c.id})">↺ Reopen</button>`}
     </div></div>
     <div class="sec"><h4>Documents</h4><div class="docs">${docs}</div></div>
     ${statusSec(c)}
@@ -1753,6 +1754,19 @@ async function caseDone(id){
   if (!j.success) { toast(j.error, true); return; }
   toast('Marked done'); closeDrawer();
 }
+async function caseUntrack(id){
+  const reason = prompt('Not a Wettech job - take it off Pumps and stop tracking its Jobber records?\n(Kept in the history; Restore brings it back.) Why (optional):', '');
+  if (reason === null) return;
+  const j = await api('/cases/' + id + '/untrack', {method:'POST', body:{reason}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast('Not tracked'); closeDrawer();
+}
+async function acNoTrack(name, on){
+  if (on && !confirm(`${name}: not a Wettech account - its Jobber quotes, jobs and requests won't be tracked here. OK?`)) return;
+  const j = await api('/accounts/no_track', {method:'POST', body:{name, on}});
+  if (!j.success) { toast(j.error, true); return; }
+  toast(on ? 'Not tracked' : 'Tracked again'); openAccount(name);
+}
 async function caseRemove(id){
   if (!confirm('Remove this job from Pumps? (It is kept in the history - the "All" list on Jobs still shows it.)')) return;
   const j = await api('/cases/' + id + '/delete', {method:'POST', body:{reason:'Removed'}});
@@ -2233,17 +2247,35 @@ async function loadScada(){
       <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}</td>
       <td style="white-space:nowrap">${esc(s.next_due_on)}</td><td class="note">${esc(s.product)}</td>
       <td class="num">${money(s.vendor_cost)}</td><td>${esc(s.our_bill)}</td><td>${esc(s.vendor)}</td>
-      <td style="white-space:nowrap">${quoteCell(s)}</td>
+      <td style="white-space:nowrap">${quoteCell(s)}${(() => { const r = (s.renewal_refs || {})[(s.next_due_on || '').slice(0, 4)] || {}; return r.job ? `<div class="note">job #${esc(r.job)}</div>` : ''; })()}${s.suggestion ? `<div class="note" style="white-space:normal"><b>Found in Jobber:</b> ${s.suggestion.uri ? `<a target="_blank" rel="noopener" href="${esc(s.suggestion.uri)}">${esc(s.suggestion.kind)} #${esc(s.suggestion.number)} ↗</a>` : esc(s.suggestion.kind) + ' #' + esc(s.suggestion.number)} (${esc((s.suggestion.status || '').replace(/_/g, ' '))}) <button class="btn s p" onclick="scadaUseSuggestion(${s.id})">Use it</button> <button class="btn s" onclick="scadaDismissSuggestion(${s.id})">Not it</button></div>` : ''}</td>
       ${yr.map(y => `<td>${cell(s.years[y])}</td>`).join('')}
       <td style="white-space:nowrap">${s.state !== 'inactive' ? `<button class="btn s p" onclick="scadaRenewed(${s.id})">Renewed…</button> ` : ''}${['overdue','due_soon'].includes(s.state) ? `<button class="btn s" onclick="scadaRenew(${s.id})">${s.case_id ? 'Open item' : 'Start item'}</button> ` : ''}<button class="btn s" onclick="scadaEdit(${s.id})">Edit</button></td></tr>`).join('') || `<tr><td colspan="${9 + yr.length}" class="empty">No SCADA clients.</td></tr>`) + '</tbody>';
 }
 async function scadaRenew(id){ const j = await api('/scada/' + id, {method:'POST', body:{action:'renewal_item'}}); if (j.success) openCase(j.case_id); else toast(j.error, true); }
-async function scadaRenewed(id){
-  const s = SC.scada.find(x => x.id === id);
-  const v = prompt(`${s.client}: renewal due ${s.next_due_on}.\nOur invoice # for it (or a note such as "No charge"):`, '');
-  if (!v) return;
-  const j = await api('/scada/' + id, {method:'POST', body:{action:'renewed', value: v}});
-  if (j.success) { toast('Recorded - next renewal moved on a year.'); loadScada(); } else toast(j.error, true);
+// Renewed (Nov 2026): the year, our Jobber quote #, job # and invoice # (or a note) - any of them.
+function scadaRenewed(id, pre){
+  const s = SC.scada.find(x => x.id === id), y = (s.next_due_on || '').slice(0, 4), r = (s.renewal_refs || {})[y] || {};
+  pre = pre || {};
+  openModal('SCADA renewed - ' + esc(s.client), `<div class="note">Renewal due ${esc(s.next_due_on || '?')}. Fill what you have - the invoice # moves the renewal date on a year.</div><div class="fields">
+    <label>Year<input type="text" id="sr_year" value="${esc(pre.year || y)}"></label>
+    <label>Jobber quote #<input type="text" id="sr_quote" value="${esc(pre.quote || r.quote || (s.renewal_quote || {}).number || '')}"></label>
+    <label>Jobber job #<input type="text" id="sr_job" value="${esc(pre.job || r.job || '')}"></label>
+    <label>Our invoice # <span class="note">(or a note such as "No charge")</span><input type="text" id="sr_invoice" value="${esc(pre.invoice || r.invoice || '')}"></label></div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="scadaRenewedSave(${id}, ${pre.suggestion ? 'true' : 'false'})">Save</button>`);
+}
+async function scadaRenewedSave(id, fromSuggestion){
+  const v = k => document.getElementById('sr_' + k).value.trim();
+  const j = await api('/scada/' + id, {method:'POST', body:{action:'renewed', year: v('year'), quote: v('quote'), job: v('job'), invoice: v('invoice'), suggestion_used: fromSuggestion}});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); toast(v('invoice') ? 'Recorded - next renewal moved on a year.' : 'Recorded'); loadScada();
+}
+function scadaUseSuggestion(id){
+  const s = SC.scada.find(x => x.id === id), g = s.suggestion || {};
+  scadaRenewed(id, {year: g.year, quote: g.kind === 'quote' ? g.number : '', job: g.kind === 'job' ? g.number : '', suggestion: true});
+}
+async function scadaDismissSuggestion(id){
+  const j = await api('/scada/' + id, {method:'POST', body:{action:'dismiss_suggestion'}});
+  if (!j.success) { toast(j.error, true); return; } loadScada();
 }
 function scadaEdit(id){
   const s = id ? SC.scada.find(x => x.id === id) : {client:'', renewal_date:'', product:'Annual Scada - Pump Station', vendor_cost:428, our_bill:'$600.00', vendor:'Wettech', years:{}, notes:'', active:1};
@@ -2630,6 +2662,7 @@ function editDiveSite(id){
     <label>Our bill<input type="text" id="ds_our_bill" value="${esc(s.our_bill || '')}"></label>
     <label>Date joined<input type="text" id="ds_joined" value="${esc(s.joined || '')}"></label>
     <label><span><input type="checkbox" id="ds_active" ${s.active === 0 ? '' : 'checked'}> Active account</span></label>
+    <label><span><input type="checkbox" id="ds_inside" ${s.billed_inside ? 'checked' : ''}> Billed inside a larger invoice <span class="note">(no "not billed out" to-do; OK to pay once that invoice is in)</span></span></label>
     <label class="w">Address / where the pumps are<textarea id="ds_address">${esc(s.address)}</textarea></label>
     <label>Gate code <span class="note">(${s.gate_code_from === 'hand' ? 'typed here - clear it to use Jobber\'s' : 'from the Jobber property - typing one here keeps yours'})</span><input type="text" id="ds_gate_code" value="${esc(s.gate_code || '')}" data-was="${esc(s.gate_code || '')}"></label>
     <label class="w">Notes for the diver (every month - what to check)<textarea id="ds_notes">${esc(s.diver_notes)}</textarea></label>
@@ -2642,7 +2675,7 @@ function editDiveSite(id){
 }
 async function saveDiveSite(id){
   const v = k => document.getElementById('ds_' + k).value;
-  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), follow_up: v('follow_up'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, active: document.getElementById('ds_active').checked, diver_cost: v('diver_cost'), our_bill: v('our_bill'), joined: v('joined'), months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
+  const body = {name: v('name'), equipment: v('equipment'), address: v('address'), diver_notes: v('notes'), follow_up: v('follow_up'), status: v('status'), status_note: v('status_note'), month_note: v('month_note'), needs_dive: document.getElementById('ds_needs').checked, active: document.getElementById('ds_active').checked, billed_inside: document.getElementById('ds_inside').checked, diver_cost: v('diver_cost'), our_bill: v('our_bill'), joined: v('joined'), months: [...document.querySelectorAll('.ds_m:checked')].map(x => x.value).join(',')};
   const gc = document.getElementById('ds_gate_code');
   if (gc.value.trim() !== gc.dataset.was) body.gate_code = gc.value.trim();   // only when changed: else Jobber's stays Jobber's
   if (id) body.id = id;
@@ -2774,7 +2807,11 @@ async function loadJobs(){
 // While Jobber syncs, check only the sync (light) every 5 sec, and reload the jobs once it's done.
 function syncInfo(s){
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
-    (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <span class="bad" title="${esc(s.errors.join('\n'))}">${s.errors.length} errors</span>` : '');
+    (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <a href="#" class="bad" onclick="event.preventDefault();showSyncErrors()" title="${esc(s.errors.join('\n'))}">${s.errors.length} error${s.errors.length === 1 ? '' : 's'} - see details</a>` : '');
+  // Under "details": the last sync's errors and a short log (record, message, time) - Nov 2026.
+  const se = document.getElementById('syncErrors');
+  if (se) { const log = s.log || [];
+    se.innerHTML = log.length ? `Jobber sync errors <span class="note">(newest first, last ${log.length})</span>` + log.map(e => `<div class="note" style="margin-left:12px"><b>${esc((e.at || '').slice(5, 16))}</b> · ${e.record ? esc(e.record) + ' · ' : ''}${esc(e.message)}</div>`).join('') : ''; se.classList.toggle('hide', !log.length); }
   clearTimeout(window._syncPoll);
   if (s.state === 'running') window._syncPoll = setTimeout(async () => { if (curTab !== 'jobs') return;
     const r = await api('/jobber/items?sync_only=1'); if (!r.success) return;
@@ -2858,13 +2895,16 @@ function drawMaintSchedule(){
   const cell = (r, who) => { if (!r) return `<span class="note" title="This account has no ${who === 'Justin' ? 'Wettech pump' : 'Gulfshore lake'} visit this month">— not for ${who}</span>`; const n = r.notified;
     return (n ? `<span class="chip g">✓ told</span> <span class="note">${esc(niceDay(d10(n.notified_at)))}${n.notified_by ? ' · ' + esc(n.notified_by) : ''}${n.how ? ' · ' + esc(n.how) : ''}</span>${n.note ? '<div class="note">' + esc(n.note) + '</div>' : ''}${n.auto ? '' : ` <button class="btn s" title="Not told after all" onclick="maintNotified(${q(r.account)}, '${r.vendor}', false)">↺</button>`}`
       : `<span class="chip r">not told</span> <button class="btn s p" title="Mark ${who} told" onclick="maintNotifiedAsk(${q(r.account)}, '${r.vendor}')">✓ Mark told</button>`)
+      + `<div class="note">${r.visit_done ? '<span class="ok">✓ visit done</span> · ' : ''}${r.billed ? `<span class="ok">✓ ${esc(r.vendor)} invoice in</span> ${esc(niceDay(r.billed))}` : `${esc(r.vendor)} invoice not in`}${r.vendor === 'Wettech' ? (r.report ? ' · ✓ report ' + esc(niceDay(r.report)) : ' · report not in') : ''}</div>`
       + `<div class="note">${r.done ? `<span class="ok">✓ done</span> (marked ${esc(niceDay(d10(r.done.done_at)))}${r.done.done_by ? ' by ' + esc(r.done.done_by) : ''}) <button class="btn s" title="Not done after all" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, false)'>↺</button>`
-        : (r.report ? '✓ report ' + esc(niceDay(r.report)) : r.billed ? '✓ billed ' + esc(niceDay(r.billed)) + ' · report not in' : 'report not in yet')
-          + (!r.report ? ` <button class="btn s" title="The visit was made - take it off the maintenance check" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, true)'>✓ Done</button>` : '')}</div>`; };
+        : (!r.billed ? `<button class="btn s" title="${esc(r.vendor)}'s invoice is in (or nothing is owed) - take it off the maintenance check" onclick='maintDone(MS.month, "${r.vendor}", ${q(r.account)}, true)'>✓ Done</button>` : '')}</div>`; };
+  // Our invoice to the client for the visit (Nov 2026) - from Jobber, or typed by hand.
+  const ourInv = r => { if (!r) return ''; const o = r.our_invoice;
+    return `<div class="note">${o ? `<span class="ok">✓ our invoice</span> ${o.uri ? `<a target="_blank" rel="noopener" href="${esc(o.uri)}">#${esc(o.number)} ↗</a>` : '#' + esc(o.number)}${o.status ? ' · ' + esc(o.status.replace(/_/g, ' ')) : ''}${o.how === 'by hand' ? ' (typed)' : ''}` : 'our invoice not sent'} <button class="btn s" title="Our invoice # for this visit - when Jobber's isn't found" onclick='maintOurInvoice(${q(r.account)}, ${q(o ? o.number : '')})'>${o ? '✎' : 'Our invoice #…'}</button></div>`; };
   document.getElementById('msBody').innerHTML = byAcct.map(a => { const w = a.rows.Wettech, g = a.rows.Gulfshore, r0 = w || g;
     const both = w && g ? (w.notified && g.notified ? '<span class="chip g">both told</span>' : !w.notified && !g.notified ? '<span class="chip r">neither told</span>' : `<span class="chip a">only ${w.notified ? 'Justin' : 'Jordan'} told</span>`) : '';
     return `<tr><td><input type="checkbox" class="msSel" data-account="${esc(a.account)}" data-w="${w && !w.notified ? 1 : ''}" data-g="${g && !g.notified ? 1 : ''}" title="Select this account, then use ✓ Justin told / ✓ Jordan told" onchange="msTick(this)" ${(w && !w.notified) || (g && !g.notified) ? (MS_SEL.has(a.account) ? 'checked' : '') : 'disabled'}></td>
-    <td style="max-width:300px"><a href="#" onclick="event.preventDefault();openAccount(${q(a.account)})"><b>${esc(a.account)}</b></a> ${both}<div class="note" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}">${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}</div>${(w && w.hold) || (g && g.hold) ? `<span class="chip a">${esc((w && w.hold) || g.hold)}</span>` : ''}</td>
+    <td style="max-width:300px"><a href="#" onclick="event.preventDefault();openAccount(${q(a.account)})"><b>${esc(a.account)}</b></a> ${both}${ourInv(r0)}<div class="note" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}">${esc(r0.what)}${r0.where ? ' · ' + esc(r0.where) : ''}</div>${(w && w.hold) || (g && g.hold) ? `<span class="chip a">${esc((w && w.hold) || g.hold)}</span>` : ''}</td>
     <td>${r0.approved ? '<span class="ok">✓ ' + esc(niceDay(r0.approved)) + '</span>' : '<span class="note">—</span>'}</td>
     <td style="min-width:150px">${cell(w, 'Justin')}</td><td style="min-width:150px">${cell(g, 'Jordan')}</td></tr>`; }).join('') || `<tr><td colspan="5" class="empty">${MS.total ? 'None to show.' : 'No maintenance due this month.'}</td></tr>`;
   document.getElementById('msAll').checked = false; msSelChanged();
@@ -2904,6 +2944,13 @@ function maintNotifiedAsk(account, vendor){
     <label>How<select id="mn_how"><option>email</option><option>phone</option><option>text</option><option>in person</option></select></label>
     <label class="w">Note<input type="text" id="mn_note" placeholder="e.g. Tom said the week of the 20th"></label></div>`,
     `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="maintNotified(${JSON.stringify(account).replace(/"/g, '&quot;')}, '${vendor}', true, document.getElementById('mn_how').value, document.getElementById('mn_note').value)">Save</button>`);
+}
+async function maintOurInvoice(account, was){
+  const v = prompt(`${account}: our invoice # for the ${MS.label} visit (blank clears it):`, was || '');
+  if (v === null) return;
+  const j = await api('/maint/our_invoice', {method:'POST', body:{month: MS.month, account, number: v.trim()}});
+  if (!j.success) { toast(j.error, true); return; }
+  MS = j; drawMaintSchedule(); toast(v.trim() ? 'Our invoice #' + v.trim() + ' recorded' : 'Cleared');
 }
 // A visit the office knows was made (Nov 2026: "both of these are done for this quarter"): off the maintenance check.
 async function maintDone(month, vendor, account, on){
@@ -2965,7 +3012,7 @@ function renderAccount(){
   const vis = (AC && AC.accounts.find(x => x.name === a.name) || {}).visit;
   document.getElementById('drawer').dataset.account = a.name;
   document.getElementById('drawer').innerHTML = `
-  <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2>${p && p.report_only ? '<div style="color:var(--amber);font-weight:600;margin:2px 0">No separate pump job - billed in the monthly maintenance</div>' : ''}<div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div></div>
+  <div class="hd"><div><h2>${esc(a.name)}${ac.active === false ? ' <span class="chip">former</span>' : ''}</h2>${p && p.report_only ? '<div style="color:var(--amber);font-weight:600;margin:2px 0">No separate pump job - billed in the monthly maintenance</div>' : ''}<div class="note">${where ? esc(where) + ' · ' : ''}${open.length} open to-do${open.length === 1 ? '' : 's'} · ${a.todos.length} in all · ${a.jobs.length} job${a.jobs.length === 1 ? '' : 's'}</div>${a.no_track ? `<div class="note"><span class="chip">not tracked</span> Not a Wettech account - its Jobber work isn't followed here. <button class="btn s" onclick='acNoTrack(${JSON.stringify(a.name).replace(/'/g, "&#39;")}, false)'>Track it again</button></div>` : `<div class="note"><button class="btn s" onclick='acNoTrack(${JSON.stringify(a.name).replace(/'/g, "&#39;")}, true)'>Not a Wettech account - don't track</button></div>`}</div>
     <div><button class="btn" onclick="closeDrawer()">✕</button></div></div>
   <div class="bd">
     <div class="sec" style="display:flex;gap:6px;flex-wrap:wrap" id="acTabs">${[['bills', `Vendor invoices (${(a.vendor_bills || []).length})`],
@@ -3065,6 +3112,7 @@ async function accountTodoDone(id, done, ev){
 }
 
 // ── mailbox scan ─────────────────────────────────────
+function showSyncErrors(){ const b = document.getElementById('statusBox'); if (b) { b.open = true; b.scrollIntoView({behavior: 'smooth'}); } }
 function statusSummary(){
   const box = document.getElementById('statusBox'); if (!box) return;
   const items = [...box.querySelectorAll('.strip>div')];

@@ -4058,6 +4058,280 @@ class PumpsTest(unittest.TestCase):
             conn.commit()
             conn.close()
 
+    def test_maintenance_visit_shows_our_invoice_and_counts_as_told(self):
+        """Nov 24 2026 (1, 2): a visit's own Jobber job invoiced in the month shows our invoice # (Sunshine Lake
+        Park #37235) and the visit is done; a # can be typed by hand; a done or billed visit is told on its own.
+        The vendor's invoice in stays its own status."""
+        acct = 'Charlotte County - Sunshine Lake Park'
+        conn = P._conn()
+        try:
+            was = conn.execute('SELECT jobber_job_id FROM pump_maint_accounts WHERE name=?', (acct,)).fetchone()[0]
+            conn.execute("UPDATE pump_maint_accounts SET jobber_job_id='J-SLP' WHERE name=?", (acct,))
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, total, created_at, start_at, "
+                         "web_uri, category, ignored, job_id) VALUES ('I-SLP', 'invoice', '37235', 'October Pump Maintenance', "
+                         "'awaiting_payment', 450, '2026-10-21', '2026-10-21', 'https://j/i/37235', 'pump', 0, 'J-SLP')")
+            conn.commit()
+            rows = {(r['account'], r['vendor']): r for r in P.maint_schedule(conn, date(2026, 10, 1))}
+            r = rows[(acct, 'Wettech')]
+            self.assertEqual((r['our_invoice']['number'], r['our_invoice']['how']), ('37235', 'jobber'))
+            self.assertTrue(r['visit_done'])
+            self.assertTrue(r['notified']['auto'], 'a done visit counts as told')
+            self.assertIn('our invoice #37235', r['notified']['how'])
+            # By hand, for an account whose job isn't found.
+            other = next(a for (a, v), x in rows.items() if v == 'Wettech' and not x['our_invoice'] and a != acct)
+            j = self.c.post('/pumps/api/maint/our_invoice', json={'month': '2026-10', 'account': other, 'number': '#37206'}).get_json()
+            mine = {(x['account'], x['vendor']): x for x in j['rows']}[(other, 'Wettech')]
+            self.assertEqual((mine['our_invoice']['number'], mine['our_invoice']['how']), ('37206', 'by hand'))
+            self.c.post('/pumps/api/maint/our_invoice', json={'month': '2026-10', 'account': other, 'number': ''})
+        finally:
+            conn.execute('UPDATE pump_maint_accounts SET jobber_job_id=? WHERE name=?', (was, acct))
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='I-SLP'")
+            conn.commit()
+            conn.close()
+
+    def test_sync_errors_are_kept_with_record_and_time(self):
+        """Nov 24 2026 (3): "Last sync did not finish · 1 errors" said nothing - each error is kept with its record,
+        message and time, the last 30."""
+        P._state_set('jobber_sync_log', [])
+        P._log_sync_errors(['quotes "pump": Jobber timed out', 'plain failure'], '2026-11-24 09:00:00')
+        log = P.jobber_sync_state()['log']
+        self.assertEqual(log[0], {'at': '2026-11-24 09:00:00', 'record': '', 'message': 'plain failure'})
+        self.assertEqual(log[1], {'at': '2026-11-24 09:00:00', 'record': 'quotes "pump"', 'message': 'Jobber timed out'})
+        P._log_sync_errors([f'e{i}: x' for i in range(40)])
+        self.assertEqual(len(P._state_get('jobber_sync_log')), P.SYNC_LOG_KEEP)
+        P._state_set('jobber_sync_log', [])
+
+    def test_scada_renewed_form_and_renewals_found_in_jobber(self):
+        """Nov 24 2026 (4): Renewed takes the year, quote #, job # and invoice #; one invoice sits in one year
+        (CH Realty #37209 was under 2025 and 2026); an approved SCADA quote at the client is suggested over a stale
+        draft (Corsa #8909 vs #9203)."""
+        conn = P._conn()
+        try:
+            ins = ("INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years, jobber_names, "
+                   "notes, updated_by, updated_at, quote) VALUES (?, ?, 'Annual Subscription - SCADA', '$600.00', 'Wettech', "
+                   "?, ?, '', 'test', '2026-01-01', ?)")
+            ch = conn.execute(ins, ('CH Realty Testsite', '2026-11-01', json.dumps({'2025': '37209', '2026': '37209'}),
+                                    'CH Realty Testsite', '')).lastrowid
+            co = conn.execute(ins, ('Corsa Testsite', '2026-12-15', json.dumps({}), 'Corsa Testsite',
+                                    json.dumps({'id': 'Q-9203', 'number': '9203', 'status': 'draft', 'year': '2026'}))).lastrowid
+            conn.commit()
+            # The sync sees #37209 (issued Nov 2026 for the Nov 1 renewal): it's 2026's only.
+            inv = {'invoiceNumber': '37209', 'invoiceStatus': 'awaiting_payment', 'issuedDate': '2026-11-06',
+                   'client': {'name': 'CH Realty Testsite'},
+                   'lineItems': {'nodes': [{'name': 'SCADA', 'description': 'SCADA Renewal annual subscription'}]}}
+            P.record_scada_invoice(conn, inv)
+            conn.commit()
+            self.assertEqual(json.loads(conn.execute('SELECT years FROM pump_scada_accounts WHERE id=?', (ch,)).fetchone()[0]),
+                             {'2026': '37209'})
+        finally:
+            conn.close()
+        r = self.c.post(f'/pumps/api/scada/{ch}', json={'action': 'renewed', 'year': '2026', 'quote': '9300', 'job': '14800',
+                                                        'invoice': '37209'}).get_json()
+        self.assertTrue(r['success'], r)
+        row = next(x for x in r['scada'] if x['id'] == ch)
+        self.assertEqual(row['renewal_refs']['2026'], {'quote': '9300', 'job': '14800', 'invoice': '37209'})
+        self.assertEqual(row['years'], {'2026': '37209'})
+        # Corsa: an approved SCADA quote at the client in Jobber is suggested.
+        saved = (P.jobber_status, P.jobber_gql)
+        P.jobber_status = lambda: {'connected': True}
+
+        def gql(q, v=None):
+            if 'quotes(' in q:
+                return {'quotes': {'nodes': [
+                    {'id': 'Q-8909', 'quoteNumber': '8909', 'title': 'Proposal', 'quoteStatus': 'approved',
+                     'createdAt': '2026-10-01T10:00:00Z', 'jobberWebUri': 'https://j/q/8909', 'client': {'name': 'Corsa Testsite'},
+                     'lineItems': {'nodes': [{'name': 'Service', 'description': 'Renew the SCADA cellular subscription'}]}},
+                    {'id': 'Q-OTHER', 'quoteNumber': '8000', 'title': 'Irrigation repair', 'quoteStatus': 'approved',
+                     'createdAt': '2026-10-01T10:00:00Z', 'jobberWebUri': '', 'client': {'name': 'Corsa Testsite'},
+                     'lineItems': {'nodes': [{'name': 'Valve', 'description': 'Replace valve'}]}}]}}
+            return {'jobs': {'nodes': []}}
+        P.jobber_gql = gql
+        try:
+            found = P.scada_find_renewals(force=True)
+        finally:
+            P.jobber_status, P.jobber_gql = saved
+        self.assertIn((co, '8909'), found)
+        conn = P._conn()
+        try:
+            sug = json.loads(conn.execute('SELECT suggestion FROM pump_scada_accounts WHERE id=?', (co,)).fetchone()[0])
+            self.assertEqual((sug['kind'], sug['number'], sug['status']), ('quote', '8909', 'approved'))
+            self.assertTrue(conn.execute("SELECT 1 FROM pump_todos WHERE key=? AND done_at IS NULL",
+                                         (f'scada-found:{co}:8909',)).fetchone())
+        finally:
+            conn.close()
+        r = self.c.post(f'/pumps/api/scada/{co}', json={'action': 'renewed', 'year': '2026', 'quote': '8909',
+                                                        'suggestion_used': True}).get_json()
+        row = next(x for x in r['scada'] if x['id'] == co)
+        self.assertIsNone(row['suggestion'])
+        self.assertEqual(row['renewal_quote']['number'], '8909')
+        conn = P._conn()
+        conn.execute('DELETE FROM pump_scada_accounts WHERE id IN (?, ?)', (ch, co))
+        conn.execute("DELETE FROM pump_todos WHERE key LIKE 'scada-found:%'")
+        conn.commit()
+        conn.close()
+
+    def test_gulfshore_billed_inside_and_month_billed_on_the_recurring_job(self):
+        """Nov 24 2026 (5): Wild Blue's Gulfshore bill is billed inside a larger invoice - no "not billed out" to-do;
+        once that invoice is there it's linked and OK to pay. Another account's bill finds Wettech's invoice on the
+        client's recurring job for the month before any to-do."""
+        conn = P._conn()
+        try:
+            self.assertEqual(conn.execute("SELECT billed_inside FROM pump_dive_sites WHERE name='Wild Blue'").fetchone()[0], 1)
+            mk = lambda client: P.create_case(conn, {'title': 'Lake filter cleaning', 'client_name': client, 'category': 'diver',
+                                                     'vendor': 'Gulfshore'}, 'test')
+            wb, other = mk('Wild Blue'), mk('Barrington Cove')
+            for cid, client in ((wb, 'Wild Blue'), (other, 'Barrington Cove')):
+                conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, doc_date, client_name, total, file_name, "
+                             "case_id, created_at) VALUES ('bill', 'filed', 'Gulfshore', ?, '2026-10-20', ?, 125, 'gs.pdf', ?, "
+                             "'2026-10-21')", (f'GS-{cid}', client, cid))
+            conn.commit()
+        finally:
+            conn.close()
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P.month_billed)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'C-X'
+        P.client_records = lambda cid, kind: []
+        P.invoices_named = lambda *a, **k: []
+        billed = {}
+        P.month_billed = lambda client, y, m: billed.get(client)
+        try:
+            P.check_diver_billed(wb)
+            P.check_diver_billed(other)
+            conn = P._conn()
+            try:
+                self.assertIsNone(conn.execute("SELECT 1 FROM pump_todos WHERE key LIKE 'gulfshore-unbilled:%' AND done_at IS NULL "
+                                               "AND json_extract(link, '$.case_id')=?", (wb,)).fetchone(), 'billed inside: no to-do')
+                self.assertTrue(conn.execute("SELECT 1 FROM pump_todos WHERE key LIKE 'gulfshore-unbilled:%' AND done_at IS NULL "
+                                             "AND json_extract(link, '$.case_id')=?", (other,)).fetchone())
+            finally:
+                conn.close()
+            billed.update({'Wild Blue': {'job': {}, 'invoice': {'id': 'I-WB', 'number': '37300', 'status': 'awaiting_payment',
+                                                               'uri': '', 'total': 2000}},
+                           'Barrington Cove': {'job': {}, 'invoice': {'id': 'I-BC', 'number': '37301', 'status': 'awaiting_payment',
+                                                                     'uri': '', 'total': 900}}})
+            P.check_diver_billed(wb)
+            P.check_diver_billed(other)
+        finally:
+            P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P.month_billed = saved
+        self.assertEqual(self.case(wb)['jobber']['invoice']['number'], '37300')
+        self.assertTrue(P._state_get(f'pay_ok:{wb}'), 'billed inside: OK to pay')
+        self.assertEqual(self.case(other)['jobber']['invoice']['number'], '37301')
+        conn = P._conn()
+        try:
+            self.assertIsNone(conn.execute("SELECT 1 FROM pump_todos WHERE key LIKE 'gulfshore-unbilled:%' AND done_at IS NULL "
+                                           "AND json_extract(link, '$.case_id')=?", (other,)).fetchone())
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (?, ?)", (wb, other))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE file_name='gs.pdf'")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_tracking_scope_not_a_wettech_job(self):
+        """Nov 24 2026 (6): our own crew's pump quote isn't tracked on its own; an account set "Not a Wettech job -
+        don't track" isn't offered; a job can be taken off Pumps (soft) with its Jobber records not offered again."""
+        conn = P._conn()
+        try:
+            ins = ("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_id, client_name, created_at, "
+                   "updated_at, category, ignored, client_company, work_by) VALUES (?, 'quote', ?, ?, 'approved', 'C-NT', ?, ?, ?, "
+                   "'pump', 0, 1, ?)")
+            today = P._today().isoformat()
+            conn.execute(ins, ('Q-OURS', '9500', 'Pump suction line repair', 'Ownwork Lakes', today, today, 'ours'))
+            conn.execute(ins, ('Q-NT', '9501', 'Pump repair', 'Notrack Plaza', today, today, 'vendor'))
+            conn.commit()
+            P.auto_track_approved(conn)
+            conn.commit()
+            self.assertIsNone(conn.execute("SELECT case_id FROM pump_jobber_items WHERE jobber_id='Q-OURS'").fetchone()[0])
+        finally:
+            conn.close()
+        self.c.post('/pumps/api/accounts/no_track', json={'name': 'Notrack Plaza', 'on': True})
+        conn = P._conn()
+        try:
+            self.assertNotIn('Q-NT', [r['jobber_id'] for r in P.untracked_jobber_items(conn)])
+        finally:
+            conn.close()
+        self.c.post('/pumps/api/accounts/no_track', json={'name': 'Notrack Plaza', 'on': False})
+        # An account's page says it.
+        self.c.post('/pumps/api/accounts/no_track', json={'name': 'Allura', 'on': True})
+        self.assertTrue(self.c.get('/pumps/api/accounts/history?name=Allura').get_json()['no_track'])
+        self.c.post('/pumps/api/accounts/no_track', json={'name': 'Allura', 'on': False})
+        self.assertFalse(self.c.get('/pumps/api/accounts/history?name=Allura').get_json()['no_track'])
+        j = self.c.post('/pumps/api/cases', json={'title': 'Irrigation thing', 'client_name': 'Ownwork Lakes'}).get_json()
+        cid = j.get('case_id') or j['case']['id']
+        conn = P._conn()
+        conn.execute("UPDATE pump_jobber_items SET case_id=? WHERE jobber_id='Q-NT'", (cid,))
+        conn.commit()
+        conn.close()
+        self.assertTrue(self.c.post(f'/pumps/api/cases/{cid}/untrack', json={'reason': 'irrigation'}).get_json()['success'])
+        c = self.case(cid)
+        self.assertEqual(c['status'], 'cancelled')
+        self.assertTrue(any(e['action'] == 'not tracked' for e in c['events']))
+        conn = P._conn()
+        try:
+            self.assertEqual(conn.execute("SELECT ignored FROM pump_jobber_items WHERE jobber_id='Q-NT'").fetchone()[0], 1)
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id IN ('Q-OURS', 'Q-NT')")
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_agent_api_runs_billing_and_upkeep(self):
+        """Nov 24 2026 (7): the agent API answers PUMP_MANAGER_WEBHOOK_KEY however it's sent (and the reply token);
+        Pump Manager marks visits done, sets our invoice # and told, records SCADA renewals, OKs bills to pay, ticks and
+        adds to-dos and takes a job off tracking - each in the history as Pump Manager, with an undo. Never: delete,
+        mark paid, email."""
+        saved = (P.PUMP_MANAGER_WEBHOOK_KEY, P.PUMP_APP_REPLY_TOKEN)
+        P.PUMP_MANAGER_WEBHOOK_KEY, P.PUMP_APP_REPLY_TOKEN = 'pm-key', 'reply-token'
+        try:
+            for h in ({'Authorization': 'Bearer pm-key'}, {'Authorization': 'pm-key '}, {'X-Api-Key': 'pm-key'},
+                      {'Authorization': 'Bearer reply-token'}):
+                self.assertEqual(self.c.get('/pumps/api/agent/maintenance', headers=h).status_code, 200, h)
+            self.assertEqual(self.c.get('/pumps/api/agent/bills', headers={'Authorization': 'Bearer nope'}).status_code, 401)
+            H = {'Authorization': 'Bearer pm-key'}
+            idx = self.c.get('/pumps/api/agent', headers=H).get_json()
+            self.assertIn('visit_done', idx['actions'])
+            self.assertEqual(self.c.get('/pumps/api/agent/scada', headers=H).status_code, 200)
+            act = lambda body: self.c.post('/pumps/api/agent/actions', json=body, headers=H).get_json()
+            acct = next(r['account'] for r in self.c.get('/pumps/api/agent/maintenance?month=2026-10', headers=H).get_json()['rows']
+                        if r['vendor'] == 'Wettech')
+            for body in ({'type': 'visit_done', 'account': acct, 'month': '2026-10'},
+                         {'type': 'our_invoice', 'account': acct, 'month': '2026-10', 'number': '37999'},
+                         {'type': 'told', 'account': acct, 'month': '2026-10', 'vendor': 'Wettech'},
+                         {'type': 'create_todo', 'title': 'Agent test to-do'}):
+                r = act(body)
+                self.assertTrue(r['success'], (body, r))
+                self.assertTrue(r['undo_id'], body)
+            row = {(x['account'], x['vendor']): x for x in
+                   self.c.get('/pumps/api/agent/maintenance?month=2026-10', headers=H).get_json()['rows']}[(acct, 'Wettech')]
+            self.assertEqual(row['our_invoice']['number'], '37999')
+            conn = P._conn()
+            tid = conn.execute("SELECT id FROM pump_todos WHERE title='Agent test to-do'").fetchone()[0]
+            sid = conn.execute("INSERT INTO pump_scada_accounts (client, renewal_date, years, jobber_names, updated_at) VALUES "
+                               "('Agent Scada Site', '2026-12-01', '{}', 'Agent Scada Site', '2026-01-01')").lastrowid
+            conn.commit()
+            conn.close()
+            self.assertTrue(act({'type': 'dismiss_todo', 'todo_id': tid})['success'])
+            r = act({'type': 'scada_renewal', 'scada_id': sid, 'year': '2026', 'quote': '9400', 'invoice': '38100'})
+            self.assertTrue(r['success'], r)
+            j = self.c.post('/pumps/api/cases', json={'title': 'Agent pay test', 'client_name': 'Agent Lakes'}).get_json()
+            cid = j.get('case_id') or j['case']['id']
+            r = act({'type': 'ok_to_pay', 'case_id': cid})
+            self.assertTrue(r['success'], r)
+            self.assertTrue(P._state_get(f'pay_ok:{cid}'))
+            self.assertTrue(any(e['actor'] == 'Pump Manager' for e in self.case(cid)['events']))
+            r = act({'type': 'untrack', 'case_id': cid, 'reason': 'test'})
+            self.assertTrue(r['success'], r)
+            self.assertEqual(self.case(cid)['status'], 'cancelled', 'soft: cancelled, kept')
+            for bad in ({'type': 'delete', 'case_id': cid}, {'type': 'mark_paid', 'case_id': cid}, {'type': 'send_email'}):
+                self.assertFalse(act(bad)['success'], bad)
+            conn = P._conn()
+            conn.execute('DELETE FROM pump_scada_accounts WHERE id=?', (sid,))
+            conn.execute('DELETE FROM pump_maint_invoices')
+            conn.execute('DELETE FROM pump_maint_done')
+            conn.execute("DELETE FROM pump_maint_notices WHERE month='2026-10' AND account=?", (acct,))
+            conn.commit()
+            conn.close()
+        finally:
+            P.PUMP_MANAGER_WEBHOOK_KEY, P.PUMP_APP_REPLY_TOKEN = saved
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
@@ -7832,7 +8106,9 @@ class PumpsTest(unittest.TestCase):
             j = r.get_json()
             lc = {(x['account'], x['vendor']): x for x in j['rows']}[('Lake Club (Spanish Wells)', 'Wettech')]
             self.assertEqual(lc['notified']['how'], 'phone')
-            self.assertEqual(j['notified'], 1 + sum(1 for x in j['rows'] if x['vendor'] == 'Gulfshore' and x['notified']))
+            # (Visits already done or billed count as told on their own since Nov 2026 - only the hand-marked here.)
+            self.assertEqual(sum(1 for x in j['rows'] if x['vendor'] == 'Wettech' and x['notified']
+                                 and not x['notified'].get('auto')), 1)
             hist = self.c.get('/pumps/api/accounts/history?name=Lake Club (Spanish Wells)').get_json()
             self.assertEqual([(n['month'], n['vendor']) for n in hist['notices']], [('2026-10', 'Wettech')])
             # Next month is its own list; un-marking takes it back off.
