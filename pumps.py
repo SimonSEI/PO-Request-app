@@ -11185,7 +11185,25 @@ def h_case_create(actor):
         raise ValueError('Give the item a title, client or description')
     conn = _conn()
     try:
+        if str(data.get('vendor') or '').strip().lower() in ('wettech', 'wet tech'):
+            data['vendor'] = 'Wettech'
         cid = create_case(conn, data, actor, source='openclaw' if actor == BOT else 'manual')
+        if data.get('match_property'):
+            report_expected(conn, cid, actor)   # Pump Manager's new_item (Nov 2026)
+        if data.get('match_property') and data.get('client_name') and not data.get('jobber_client_id'):
+            try:
+                hit = match_client_property(data.get('client_name'), data.get('site') or data.get('title') or '')
+            except JobberError:
+                hit = None
+            if hit:
+                j = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (cid,)).fetchone()['jobber'] or '{}')
+                j['client'] = {'id': hit['client_id'], 'name': hit['client_name']}
+                if hit.get('property_id'):
+                    j['property'] = {'id': hit['property_id'], 'label': hit['property_label']}
+                conn.execute('UPDATE pump_cases SET jobber=?, jobber_client_id=?, jobber_property_id=? WHERE id=?',
+                             (json.dumps(j), hit['client_id'], hit.get('property_id') or '', cid))
+                _event(conn, actor, 'Jobber client set', hit['client_name'] + (f" - {hit['property_label']}"
+                                                                               if hit.get('property_id') else ''), case_id=cid)
         if data.get('steps') or data.get('note'):
             update_case(conn, cid, {'steps': data.get('steps') or {}, 'note': data.get('note')}, actor)
         if data.get('jobber_item_id'):
@@ -11194,6 +11212,40 @@ def h_case_create(actor):
         return {'case_id': cid, 'case': case_detail(conn, cid)}
     finally:
         conn.close()
+
+
+SITE_WORK = ('repair', 'install', 'maintenance', 'inspection')
+REPORT_VENDORS = ('Wettech', 'Naples Electric')
+
+
+def report_expected(conn, case_id, actor):
+    """Wettech and Naples Electric leave a service report for work at the site (Nov 2026): "Report logged" is a step
+    to do on such an item - not "not needed"."""
+    row = conn.execute('SELECT vendor, category, steps FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+    if not row or row['vendor'] not in REPORT_VENDORS or row['category'] not in SITE_WORK:
+        return False
+    if (json.loads(row['steps'] or '{}').get('report_logged') or {}).get('na'):
+        _set_step(conn, case_id, 'report_logged', by=actor, na=False)
+        return True
+    return False
+
+
+def match_client_property(client_name, site_text):
+    """The Jobber client a new item's client name clearly is, and the one of its properties the site text names.
+    {client_id, client_name, property_id, property_label} or None."""
+    if not jobber_status()['connected']:
+        return None
+    pick = pick_client(search_clients(client_name))
+    if not pick:
+        return None
+    out = {'client_id': pick['id'], 'client_name': pick.get('name') or client_name, 'property_id': '', 'property_label': ''}
+    text = (site_text or '').strip()
+    if text:
+        props = client_jobs(pick['id']).get('properties') or []
+        scored = sorted(((place_score(text, p['label']), p) for p in props if p.get('label')), key=lambda x: -x[0])
+        if scored and scored[0][0] >= 0.85 and (len(scored) == 1 or scored[0][0] - scored[1][0] >= 0.1):
+            out.update(property_id=scored[0][1]['id'], property_label=scored[0][1]['label'])
+    return out
 
 
 QUOTE_PATH = ('vendor_quote', 'client_quote', 'client_approved')
@@ -11684,6 +11736,88 @@ def h_doc_upload(actor):
             email={'subject': data.get('email_subject', ''), 'from': data.get('email_from', ''),
                    'date': data.get('email_date', '')})})
     return {'results': results}
+
+
+ATTACH_MAX_BYTES = 20 * 1024 * 1024
+_ATTACH_TYPES = {'.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                 '.gif': 'image/gif', '.heic': 'image/heic', '.webp': 'image/webp',
+                 '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}
+
+
+@api('/cases/<int:case_id>/attach_doc', methods=('POST',))
+def h_case_attach_doc(actor, case_id):
+    """Body: {"filename", "content_base64", "kind": report|bill|quote, "jobber_note": bool} - file a document on this
+    item, as an upload does (Nov 2026: Pump Manager's attach_doc). A report on a maintenance item ticks "Report
+    logged". jobber_note: also put it on the item's Jobber job as a note with the file (a signed link that runs
+    out) - our rebranded report, never the vendor's original report."""
+    data = _json()
+    kind = str(data.get('kind') or '').lower()
+    if kind not in ('report', 'bill', 'quote'):
+        raise ValueError('kind is report, bill or quote')
+    name = os.path.basename(str(data.get('filename') or '').strip()) or f'{kind}.pdf'
+    ext = os.path.splitext(name)[1].lower()
+    if ext not in _ATTACH_TYPES:
+        raise ValueError('A PDF, image or Word file (.pdf .png .jpg .jpeg .gif .heic .webp .docx)')
+    try:
+        raw = base64.b64decode(str(data.get('content_base64') or data.get('base64') or ''), validate=False)
+    except (ValueError, TypeError):
+        raise ValueError('content_base64 is not base64')
+    if not raw:
+        raise ValueError('content_base64 is empty')
+    if len(raw) > ATTACH_MAX_BYTES:
+        raise ValueError('The file is over 20 MB')
+    conn = _conn()
+    try:
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        if not case:
+            return {'success': False, 'error': 'Not found'}, 404
+        case = dict(case)
+    finally:
+        conn.close()
+    res = ingest_document(name, raw, source='upload', kind_hint=kind, actor=actor, case_id=case_id)
+    if res.get('skipped') and not res.get('doc_id'):
+        raise ValueError(f"Not filed: {res['skipped']}")
+    doc_id = res.get('doc_id')
+    out = {'doc_id': doc_id, 'case_id': res.get('case_id') or case_id, 'kind': res.get('kind') or kind,
+           'review': res.get('review') or ''}
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone() if doc_id else None
+        doc = _doc_dict(row) if row else None
+        if doc and doc['kind'] == 'report' and case.get('category') in ('maintenance', 'inspection') and \
+                not (json.loads(case.get('steps') or '{}').get('report_logged') or {}).get('at'):
+            _set_step(conn, case_id, 'report_logged', at=_today().isoformat(), by=actor)
+            out['report_logged'] = True
+        conn.commit()
+    finally:
+        conn.close()
+    if doc and str(data.get('jobber_note', '')).lower() in ('1', 'true', 'yes', 'on'):
+        job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id')
+        if not job_id:
+            out['jobber_note'] = 'not added - the item has no Jobber job'
+        elif doc['kind'] == 'report' and not doc.get('has_branded'):
+            out['jobber_note'] = "not added - only our rebranded report goes in Jobber, and this one isn't rebranded"
+        else:
+            version = 'branded_pdf' if doc['kind'] == 'report' else 'original'
+            fname = (os.path.splitext(name)[0] + '.pdf') if version == 'branded_pdf' else name
+            text = f"{doc.get('vendor') or 'Vendor'} {kind}: {fname}" + (f" ({doc['doc_date']})" if doc.get('doc_date') else '')
+            try:
+                note = note_vendor_file(doc, 'job', job_id, text, version=version, file_name=fname,
+                                        content_type='application/pdf' if version == 'branded_pdf' else _ATTACH_TYPES[ext])
+                out['jobber_note'] = 'added with the file' if note.get('attached') else 'added (the file could not be attached)'
+                conn = _conn()
+                try:
+                    dj = json.loads(conn.execute('SELECT jobber FROM pump_docs WHERE id=?', (doc_id,)).fetchone()['jobber'] or '{}')
+                    dj.update(note_id=dj.get('note_id') or note.get('note_id') or 'noted', note_on='job')
+                    conn.execute('UPDATE pump_docs SET jobber=? WHERE id=?', (json.dumps(dj), doc_id))
+                    _event(conn, actor, 'document on the Jobber job', f"{fname} - {out['jobber_note']}", case_id=case_id,
+                           doc_id=doc_id)
+                    conn.commit()
+                finally:
+                    conn.close()
+            except JobberError as e:
+                out['jobber_note'] = f'not added - {e}'
+    return out
 
 
 DOC_EDITABLE = ('kind', 'vendor', 'doc_number', 'doc_date', 'po_number', 'wo_number', 'quote_ref', 'ordered_by',
@@ -18926,9 +19060,10 @@ def pm_action(conn, a):
         cid, name = case()
         return {'label': f'Mark {name} done', 'method': 'POST', 'path': f'/cases/{cid}/done',
                 'body': {'note': str(a.get('note') or 'Pump Manager')[:300]}}
-    body = {k: str(a.get(k) or '')[:500] for k in ('title', 'client_name', 'site', 'vendor', 'description')}
+    body = {k: str(a.get(k) or '')[:500] for k in ('title', 'client_name', 'site', 'vendor', 'description', 'category')}
     if not (body['title'] or body['client_name']):
         raise ValueError('A new item needs a title or client')
+    body['match_property'] = '1'
     return {'label': f"New item: {body['title'] or body['client_name']}", 'method': 'POST', 'path': '/cases',
             'body': {k: v for k, v in body.items() if v}}
 
@@ -19035,6 +19170,11 @@ PM_AGENT_ACTIONS = {
     'untrack': ("Take an item off Pumps - not a Wettech job (soft: cancelled, kept, can be restored)",
                 {'case_id': 'the item', 'reason': 'optional'}),
     'no_track_account': ("Set an account not tracked (or tracked again)", {'account': 'account name', 'on': 'true | false'}),
+    'attach_doc': ("File a document (report, bill or quote) on an item, like an upload; optionally also on its Jobber "
+                   "job as a note with the file",
+                   {'case_id': 'the item', 'filename': 'e.g. report.pdf (.pdf, image or .docx)',
+                    'content_base64': 'the file, base64', 'kind': 'report | bill | quote',
+                    'jobber_note': 'true to also add it to the linked Jobber job (optional)'}),
     'bill_fields': ("Correct a vendor bill's vendor, total or bill date as read (never marks it paid)",
                     {'doc_id': 'the vendor invoice (document id)', 'vendor': 'optional', 'total': 'optional, dollars',
                      'bill_date': 'optional, YYYY-MM-DD'}),
@@ -19123,6 +19263,19 @@ def agent_action(conn, a):
             raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
         return {'label': f'Not a Wettech job - take {name} off Pumps', 'method': 'POST', 'path': f"/cases/{row['id']}/untrack",
                 'body': {'reason': str(a.get('reason') or '')[:300]}}
+    if t == 'attach_doc':
+        if not row:
+            raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
+        kind = str(a.get('kind') or '').lower()
+        if kind not in ('report', 'bill', 'quote'):
+            raise ValueError('kind is report, bill or quote')
+        content = a.get('content_base64') or a.get('base64') or a.get('file_base64') or ''
+        if not content:
+            raise ValueError('content_base64 (the file) is missing')
+        fname = os.path.basename(str(a.get('filename') or f'{kind}.pdf'))[:120]
+        return {'label': f'Attach {kind} {fname} to {name}', 'method': 'POST', 'path': f"/cases/{row['id']}/attach_doc",
+                'body': {'filename': fname, 'content_base64': content, 'kind': kind,
+                         'jobber_note': truth('jobber_note', False)}}
     if t == 'bill_fields':
         did = str(a.get('doc_id') or '').strip()
         d_row = conn.execute("SELECT id, vendor, doc_number FROM pump_docs WHERE id=? AND kind='bill'",
@@ -19154,6 +19307,14 @@ def agent_action(conn, a):
         what = 'not needed' if v == 'na' else ('done ' + v if v else 'not done')
         return {'label': f'{dict(STEPS)[k].format(vendor="vendor")} on {name}: {what}', 'method': 'POST',
                 'path': f"/cases/{row['id']}", 'body': {'steps': {k: v}}}
+    lk = 'quote' if t == 'link_quote' else str(a.get('kind') or '').lower() if t == 'link' else ''
+    if lk in ('quote', 'invoice', 'job') and row and num:
+        cj = json.loads(conn.execute('SELECT jobber FROM pump_cases WHERE id=?', (row['id'],)).fetchone()['jobber'] or '{}')
+        on = str((cj.get(lk) or {}).get('number') or '').lstrip('#') == num or bool(conn.execute(
+            'SELECT 1 FROM pump_jobber_items WHERE kind=? AND number=? AND case_id=?', (lk, num, row['id'])).fetchone())
+        if on:
+            # Already on the item (Nov 2026): success, and no second history entry.
+            return {'label': f'Jobber {lk} #{num} is already linked to {name}', 'noop': True, 'method': 'POST', 'path': ''}
     if t == 'link_quote':
         if not num:
             raise ValueError('Which Jobber quote #?')
@@ -19196,6 +19357,9 @@ def run_agent_action(a):
         r = agent_action(conn, a)
     finally:
         conn.close()
+    if r.get('noop'):
+        return {'success': True, 'action': r['label'], 'already': True, 'undo_id': None,
+                'case_id': int(a['case_id']) if str(a.get('case_id') or '').isdigit() else None}, 200
     if _AGENT_NEVER.search(r['path']):
         raise ValueError('Pump Manager may not delete, mark bills paid or send email')
     fn, kw = _agent_route(r['method'], r['path'])
@@ -19275,7 +19439,7 @@ def _agent_job(conn, c, todos):
     J = c.get('jobber') or {}
     items = [dict(r) for r in conn.execute('SELECT kind, number, title, status, total, client_name, property_label, '
                                            'web_uri FROM pump_jobber_items WHERE case_id=? ORDER BY kind, number', (c['id'],))]
-    prop = next((i['property_label'] for i in items if i.get('property_label')), '')
+    prop = next((i['property_label'] for i in items if i.get('property_label')), '') or (J.get('property') or {}).get('label') or ''
     bills = [{'doc_id': r['id'], 'number': r['doc_number'], 'date': r['doc_date'], 'vendor': r['vendor'],
               'subtotal': r['subtotal'], 'total': r['total']}
              for r in conn.execute("SELECT id, doc_number, doc_date, vendor, subtotal, total FROM pump_docs "
@@ -19352,8 +19516,27 @@ def agent_actions():
     """POST {type, case_id, ...}: one action, done now. GET: the action types and their params."""
     if request.method == 'GET':
         return {'actions': {k: {'does': v[0], 'params': v[1]} for k, v in PM_AGENT_ACTIONS.items()},
+                'request_format': {
+                    'method': 'POST /pumps/api/agent/actions',
+                    'body': '{"type": "<action>", ...its params at the top level}',
+                    'example': {'type': 'link_quote', 'case_id': 123, 'number': '9203'},
+                    'also_accepted': '{"action": "<action>", "params": {...}}',
+                    'auth': 'Authorization: Bearer <PUMP_MANAGER_WEBHOOK_KEY> (or X-Api-Key)',
+                    'answer': '{"success", "action", "case_id", "undo_id" (POST /undo takes it back), "error"}'},
                 'never': 'delete, marking bills paid, sending email; Jobber changes need a person\'s click'}
-    return run_agent_action(request.get_json(silent=True) or {})
+    return run_agent_action(agent_request_body(request.get_json(silent=True) or {}))
+
+
+def agent_request_body(b):
+    """{"type", ...params} as is; {"action", "params": {...}} (or "type" with nested "params") flattened."""
+    if not isinstance(b, dict):
+        return {}
+    out = {k: v for k, v in b.items() if k not in ('params', 'action')}
+    if isinstance(b.get('params'), dict):
+        out = {**b['params'], **out}
+    if not out.get('type') and b.get('action'):
+        out['type'] = b['action']
+    return out
 
 
 def agent_undo():
