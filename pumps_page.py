@@ -435,6 +435,7 @@ details.fold[open] > summary h4::before { content: '▾ '; }
     <button class="btn" id="billsPaid" onclick="billsMarkPaid()">✓ Mark selected paid</button>
     <button class="btn s" onclick="billsAll(null, null, true)">Select all</button><button class="btn s" onclick="billsAll(null, null, false)">Select none</button>
     <span class="note">Shift-click to tick a run of bills</span>
+    <label class="note" title="Each weekday from 8am the bills ready to pay go to Christian in one email and are marked paid"><input type="checkbox" id="billsAuto" onchange="billsAuto(this.checked)"> Auto-email Christian weekdays 8am</label>
     <div class="sp"></div><span class="note" id="billsInfo"></span>
   </div>
   <div class="note" style="margin-bottom:10px">Every vendor bill not paid yet, by vendor. A bill can be paid once we've invoiced the client for it; ticked ones go in one email to Christian, with the bills attached. Mark each paid when it is.</div>
@@ -923,7 +924,7 @@ async function loadToday(){
     (i.kind === 'no_quote' ? `<button class="btn s p" onclick="billAnyway(${i.id})">Bill it +30%</button>` : '') + `<button class="btn s" onclick="resolveIssue(${i.id})">Resolved</button>`, i.todo_key)));
   // One to-do for every bill that can be paid (Oct 2026): preview the one email to Christian from here.
   if (q.bills_to_pay_count) urgent.push(todoItem('Pay vendors', 'r', `${q.bills_to_pay_count} vendor bill${q.bills_to_pay_count > 1 ? 's' : ''} can be paid`,
-    'Email Christian to pay them - sending marks them paid', "showTab('bills')",
+    'Sent to Christian automatically weekdays at 8am (and marked paid) - or preview and send now', "showTab('bills')",
     `<button class="btn s p" onclick="billsEmail([])">✉ Preview email to Christian</button><button class="btn s" onclick="showTab('bills')">See the bills</button>`));
   q.scada_attention.filter(s => s.state === 'overdue').forEach(s => urgent.push(todoItem('SCADA overdue', 'r', esc(s.client_name) + (s.site ? ' · ' + esc(s.site) : ''), 'Renewal overdue since ' + esc(s.next_due_on) + (s.state_note ? ' · ' + esc(s.state_note) : '') + followUp(s.follow_up), "showTab('scada')", '', s.todo_key)));
   q.bills_to_draft.forEach(d => { const ip = (d.jobber || {}).invoice_pending || {}; todo.push(todoItem('Draft invoice', 'a', esc(d.client_name || d.file_name), `${d.account_note ? '<b class="warn">📌 ' + esc(d.account_note) + '</b><br>' : ''}${esc(d.vendor)} bill #${esc(d.doc_number)} · ${money(d.total)}${d.bill_kind ? ' · <b>' + esc(d.bill_kind) + '</b>' : ''}${ip.reason ? ' · <b class="warn">' + esc(ip.reason) + '</b>' : ''}`, `openCase(${d.case_id})`,
@@ -1267,10 +1268,15 @@ async function loadVInvoices(){
       <td><span class="chip ${cls}">${label}</span>${x.paid_on ? `<div class="note">paid ${esc(x.paid_on)}</div>` : ''}${x.state === 'cancelled' && x.case_id ? `<div><button class="btn s" title="Cancelled by mistake? Back to active" onclick="caseRestore(${x.case_id}).then(loadVInvoices)">↺ Restore</button></div>` : ''}</td></tr>`; }).join('')}</tbody></table>`
     : '<div class="empty">No vendor invoices here.</div>';
 }
+async function billsAuto(on){
+  const j = await api('/bills_to_pay/auto', {method: 'POST', body: {on}});
+  toast(j.success ? (on ? 'Ready bills will go to Christian weekdays at 8am' : 'Automatic email to Christian off') : j.error);
+}
 async function loadBills(){
   const j = await api('/bills_to_pay');
   const box = document.getElementById('billsList');
   if (!j.success) { box.innerHTML = `<div class="issue">${esc(j.error)}</div>`; return; }
+  const ab = document.getElementById('billsAuto'); if (ab) ab.checked = j.auto !== false;
   let n = 0, total = 0;
   box.innerHTML = j.vendors.map(g => `<div class="grp">${esc(g.vendor)} · ${money(g.payable_total)} to pay${g.waiting_total ? ' · ' + money(g.waiting_total) + ' waiting' : ''}</div>
     <table class="t"><thead><tr><th><input type="checkbox" title="Tick all of ${esc(g.vendor)}'s payable bills" onchange="billsAll(this, '${esc(g.vendor)}')"></th><th>Job</th><th>Their invoice</th><th class="num">Amount</th><th>Can it be paid?</th><th></th></tr></thead><tbody>
