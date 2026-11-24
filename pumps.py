@@ -10659,6 +10659,41 @@ def _scheduled_pay_email(now=None):
     return r
 
 
+def po_claude_status():
+    """The PO@ checker's last Claude failure, in plain words (the raw error kept for "details")."""
+    p = dict(_state_get('po_claude_problem') or {})
+    raw = p.get('problem') or ''
+    if not raw:
+        return p
+    if re.search(r'credit balance is too low', raw, re.I):
+        p['plain'] = ('the Anthropic account is out of credits - add credits at console.anthropic.com > Plans & Billing, '
+                      'then press Check again')
+    elif re.search(r'authentication|invalid x-api-key|401', raw, re.I):
+        p['plain'] = 'the Anthropic API key was refused - check ANTHROPIC_API_KEY in Railway'
+    elif re.search(r'overloaded|529|rate limit|429', raw, re.I):
+        p['plain'] = 'Anthropic was busy - it tries again on the next invoice'
+    else:
+        p['plain'] = raw[:160]
+    return p
+
+
+@api('/po_claude/check', methods=('POST',))
+def h_po_claude_check(actor):
+    """Try the PO@ checker's Claude key now (a one-word request): the banner clears if it works."""
+    if not ANTHROPIC_API_KEY:
+        return {'ok': False, 'error': 'ANTHROPIC_API_KEY is not set'}
+    try:
+        import anthropic
+        anthropic.Anthropic(api_key=ANTHROPIC_API_KEY).messages.create(
+            model=os.environ.get('PO_CLAUDE_CHECK_MODEL', 'claude-haiku-4-5-20251001'), max_tokens=1,
+            messages=[{'role': 'user', 'content': 'ok'}])
+    except Exception as e:
+        _state_set('po_claude_problem', {'problem': str(e)[:300], 'where': 'checking the key', 'at': _now_text()[:16]})
+        return {'ok': False, 'error': po_claude_status().get('plain')}
+    _state_set('po_claude_problem', {'problem': '', 'where': '', 'at': _now_text()[:16]})
+    return {'ok': True}
+
+
 @api('/bills_to_pay/auto', methods=('POST',))
 def h_bills_to_pay_auto(actor):
     """Body: {"on": bool} - the weekday email of ready bills to Christian on or off."""
@@ -19424,7 +19459,7 @@ def page():
                                   jobber=jobber_status(),
                                   claude=USE_CLAUDE,
                                   claude_problem=(_state_get('claude_problem') or {}).get('problem', ''),
-                                  po_claude=(_state_get('po_claude_problem') or {}),
+                                  po_claude=po_claude_status(),
                                   email=bool(CFG.get('email_enabled')),
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,
