@@ -4721,6 +4721,79 @@ PO Box 123
         finally:
             conn.close()
 
+    def test_agent_attach_doc_request_format_link_and_new_item(self):
+        """Nov 2026, Pump Manager: attach_doc files a report/bill on an item like an upload (a maintenance report ticks
+        Report logged; jobber_note puts a bill on the Jobber job, never a report that isn't ours); GET /actions says
+        the request format and {"action", "params"} is accepted; linking a quote that's already on the item is a
+        success with no history; new_item sets the Jobber client and the property the site names, and a Wettech
+        site job expects its report."""
+        import base64 as _b64
+        saved = (P.PUMP_MANAGER_WEBHOOK_KEY, P.note_vendor_file, P.jobber_status, P.search_clients, P.client_jobs)
+        P.PUMP_MANAGER_WEBHOOK_KEY = 'pm-key'
+        H = {'Authorization': 'Bearer pm-key'}
+        act = lambda body: self.c.post('/pumps/api/agent/actions', json=body, headers=H).get_json()
+        noted = []
+        P.note_vendor_file = lambda doc, target, tid, text, version='original', file_name=None, content_type=None: \
+            noted.append((target, tid, version, doc['kind'])) or {'note_id': 'N1', 'attached': True}
+        conn = P._conn()
+        cid = P.create_case(conn, {'title': 'Attach Lakes maintenance', 'client_name': 'Attach Lakes', 'category': 'maintenance',
+                                   'vendor': 'Wettech', 'jobber': {'job': {'id': 'J-AT', 'number': '1999'},
+                                                                   'quote': {'id': 'Q-AT', 'number': '9203'}}}, 'test')
+        conn.commit()
+        conn.close()
+        try:
+            fmt = self.c.get('/pumps/api/agent/actions', headers=H).get_json()
+            self.assertIn('"type": "<action>"', fmt['request_format']['body'])
+            self.assertIn('attach_doc', fmt['actions'])
+            self.extracts['r-att1.pdf'] = {**extraction('report', 'R1', client='Attach Lakes'), 'category': 'maintenance'}
+            r = act({'action': 'attach_doc', 'params': {'case_id': cid, 'filename': 'r-att1.pdf', 'kind': 'report',
+                                                        'content_base64': _b64.b64encode(b'%PDF-1.4 r-att1').decode(),
+                                                        'jobber_note': True}})
+            self.assertTrue(r['success'], r)
+            self.assertTrue(r['doc_id'] and r['undo_id'])
+            self.assertTrue(r.get('report_logged'))
+            self.assertIn('not added', r['jobber_note'])
+            self.assertTrue(self.case(cid)['steps']['report_logged'].get('at'))
+            self.extracts['b-att1.pdf'] = extraction('bill', 'B-AT1', client='Attach Lakes')
+            r = act({'type': 'attach_doc', 'case_id': cid, 'filename': 'b-att1.pdf', 'kind': 'bill', 'jobber_note': 'true',
+                     'content_base64': _b64.b64encode(b'%PDF-1.4 b-att1').decode()})
+            self.assertTrue(r['success'], r)
+            self.assertEqual(noted, [('job', 'J-AT', 'original', 'bill')])
+            self.assertFalse(act({'type': 'attach_doc', 'case_id': cid, 'filename': 'x.exe', 'kind': 'bill',
+                                  'content_base64': 'AAAA'})['success'])
+            # already linked: success, no new history
+            n = len(self.case(cid)['events'])
+            r = act({'type': 'link_quote', 'case_id': cid, 'number': '9203'})
+            self.assertTrue(r['success'] and r['already'], r)
+            r = act({'type': 'link', 'case_id': cid, 'kind': 'quote', 'number': '#9203'})
+            self.assertTrue(r['success'] and r['already'], r)
+            self.assertEqual(len(self.case(cid)['events']), n)
+            # new_item: the client and the property the site names
+            P.jobber_status = lambda: {'connected': True}
+            P.search_clients = lambda name, limit=8: [{'id': 'C-NI', 'name': 'Newitem Lakes HOA', 'score': 0.95}]
+            P.client_jobs = lambda client_id: {'properties': [{'id': 'P-1', 'label': '100 Main St, Naples - North Pump Station'},
+                                                              {'id': 'P-2', 'label': '200 Lake Dr, Naples - Clubhouse'}],
+                                               'jobs': []}
+            r = act({'type': 'new_item', 'title': 'Pump won\'t start', 'client_name': 'Newitem Lakes HOA',
+                     'site': 'Clubhouse', 'vendor': 'WetTech'})
+            self.assertTrue(r['success'], r)
+            c = self.case(r['case_id'])
+            self.assertEqual((c['jobber_client_id'], c['jobber_property_id']), ('C-NI', 'P-2'))
+            self.assertEqual(c['jobber']['property']['label'], '200 Lake Dr, Naples - Clubhouse')
+            self.assertEqual(c['vendor'], 'Wettech')
+            self.assertFalse(c['steps'].get('report_logged', {}).get('na'), 'a Wettech site job expects its report')
+            conn = P._conn()
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (r['case_id'],))
+            conn.commit()
+            conn.close()
+        finally:
+            P.PUMP_MANAGER_WEBHOOK_KEY, P.note_vendor_file, P.jobber_status, P.search_clients, P.client_jobs = saved
+            conn = P._conn()
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE case_id=?", (cid,))
+            conn.commit()
+            conn.close()
+
     def test_agent_api_runs_billing_and_upkeep(self):
         """Nov 24 2026 (7): the agent API answers PUMP_MANAGER_WEBHOOK_KEY however it's sent (and the reply token);
         Pump Manager marks visits done, sets our invoice # and told, records SCADA renewals, OKs bills to pay, ticks and

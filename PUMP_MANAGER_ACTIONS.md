@@ -74,7 +74,10 @@ the app sends with questions; find its value in Railway → Office App → Varia
 
 ### Act
 
-`POST /pumps/api/agent/actions` with `{"type": ..., "case_id": ..., ...}`. It takes the Ask panel's types
+`POST /pumps/api/agent/actions` with `{"type": "<action>", ...params at the top level}` - e.g.
+`{"type": "link_quote", "case_id": 123, "number": "9203"}`. `{"action": "<action>", "params": {...}}` is accepted too.
+`GET /pumps/api/agent/actions` lists every type, its params and this format. Linking a quote, invoice or job that's
+already on the item answers success (`"already": true`) and adds nothing to its history. It takes the Ask panel's types
 (above) and these:
 
 | type | params | does |
@@ -92,6 +95,7 @@ the app sends with questions; find its value in Railway → Office App → Varia
 | `create_todo` / `dismiss_todo` | `title`, `detail`, `due_on` / `todo_id` | Adds a to-do / ticks one done |
 | `untrack` | `case_id`, `reason` | Not a Wettech job: takes it off Pumps (soft - cancelled, kept, Restore brings it back) |
 | `no_track_account` | `account`, `on` | An account that isn't Wettech's pump work: its Jobber records aren't tracked |
+| `attach_doc` | `case_id`, `filename`, `content_base64`, `kind` (report, bill or quote), `jobber_note` (optional) | Files the document on the item like an upload; a report on a maintenance item ticks "Report logged"; `jobber_note: true` also adds it to the item's Jobber job as a note with the file (our rebranded report only) |
 | `bill_fields` | `doc_id`, `vendor`, `total`, `bill_date` (any of them) | Corrects a vendor bill as read (e.g. read without Claude: vendor and amount blank). Never marks it paid |
 
 `status` also takes `waiting_quote`, `quote_received` and `waiting_approval`.
