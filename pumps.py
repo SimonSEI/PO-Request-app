@@ -1712,6 +1712,8 @@ def case_detail(conn, case_id):
     d['jobber_items'] = [dict(r) for r in conn.execute(
         'SELECT * FROM pump_jobber_items WHERE case_id=? ORDER BY updated_at DESC', (case_id,))]
     d['schedule_email'] = _schedule_mailto(d)
+    d['diver'] = is_diver_case(d)
+    d['billed_inside'] = d['diver'] and lake_billed_inside(conn, d.get('client_name'))
     d['quote_suggestions'] = quote_suggestions(conn, d)
     d['account'] = account_info(conn, d)
     add_account_names(conn, [d])
@@ -2806,6 +2808,115 @@ def is_diver_bill(doc):
     return (doc or {}).get('kind') == 'bill' and re.match(r'\s*gulf\s*shore', (doc or {}).get('vendor') or '', re.I) is not None
 
 
+def is_diver_case(case):
+    """A Gulfshore (lake filter) item."""
+    return (case or {}).get('category') == 'diver' or re.match(r'\s*gulf\s*shore', (case or {}).get('vendor') or '', re.I) is not None
+
+
+INVOICE_NOT_SENT = ('draft', 'voided', 'bad_debt')
+_LAKE_WORDS = re.compile(r'\blake\b|\bfilter|\bdiv(?:er|ing)\b|\bgulf\s*shore\b|\bintake\b', re.I)
+
+
+def lake_billed_inside(conn, client):
+    """The lake account's "billed inside a larger invoice" setting (Wild Blue)."""
+    for r in conn.execute('SELECT name, billed_inside FROM pump_dive_sites'):
+        if r['billed_inside'] and client and (r['name'] == client or _same_account(r['name'], client)):
+            return True
+    return False
+
+
+def invoice_line_text(invoice_id):
+    """An invoice's subject and lines as one text, from Jobber ('' when it can't be read)."""
+    spec = ['id', 'subject', ('lineItems', [('nodes', ['name', 'description'])])]
+
+    def make(fields):
+        return f'query($id: EncodedId!) {{ invoice(id: $id) {{ {fields} }} }}'
+    try:
+        data, _ = _gql_tolerant(make, spec, {'id': invoice_id}, required=('id',))
+    except JobberError:
+        return None
+    n = data.get('invoice') or {}
+    if not n.get('id'):
+        return None             # not read: unknown
+    lines = (n.get('lineItems') or {}).get('nodes') if isinstance(n.get('lineItems'), dict) else (n.get('lineItems') or [])
+    return ' '.join([n.get('subject') or ''] + [f"{li.get('name') or ''} {li.get('description') or ''}" for li in lines or []])
+
+
+def invoice_covers_lake(invoice_id):
+    """Does our invoice bill the lake filter cleaning (a lake/filter/diver line)? None when it can't be read."""
+    text = invoice_line_text(invoice_id)
+    return None if text is None else bool(_LAKE_WORDS.search(text))
+
+
+def diver_month_invoice(conn, case, doc, acct):
+    """The month's invoice on the account's own recurring job (the Accounts tab's Jobber job): synced items first,
+    then Jobber - for the service month, or made up to 45 days after it (Wild Blue #2542, Nov 2026)."""
+    job_id = (acct.get('pump') or {}).get('jobber_job_id') or ''
+    if not job_id:
+        return None
+    y, m = bill_service_month(doc)
+    first = date(y, m, 1)
+    lo, hi = (first - timedelta(days=5)).isoformat(), (first + timedelta(days=75)).isoformat()
+    local = [dict(r) for r in conn.execute(
+        "SELECT jobber_id AS id, number, status, web_uri AS uri, total, COALESCE(NULLIF(start_at, ''), created_at) AS d "
+        "FROM pump_jobber_items WHERE kind='invoice' AND job_id=?", (job_id,))]
+    recs = [r for r in local if (r['status'] or '') not in ('voided', 'bad_debt') and lo <= (r['d'] or '')[:10] <= hi]
+    if not recs:
+        try:
+            recs = [{**i, 'd': i['date']} for i in job_invoices(job_id)
+                    if i['status'] not in ('voided', 'bad_debt') and lo <= (i['date'] or '') <= hi]
+        except JobberError:
+            recs = []
+    if not recs:
+        return None
+    r = min(recs, key=lambda r: abs((date.fromisoformat((r['d'] or lo)[:10]) - first).days))
+    return {'id': r['id'], 'number': str(r['number'] or ''), 'status': r['status'] or '', 'uri': r.get('uri') or '',
+            'total': r.get('total')}
+
+
+def diver_bills_for_month(conn, doc, case, client_id=''):
+    """Open Gulfshore bills for the same site and service month as a Wettech maintenance bill - not on an invoice
+    yet - to go on the same invoice (Nov 2026: one pump invoice for both). [{id, case_id, line_items, ...}]"""
+    names = [x for x in ((case or {}).get('client_name'), doc.get('client_name')) if x]
+    if not names:
+        return []
+    ym = bill_service_month(doc)
+    out = []
+    for r in conn.execute("SELECT d.*, c.client_name AS case_client, c.jobber AS case_jobber, c.jobber_client_id AS cc "
+                          "FROM pump_docs d JOIN pump_cases c ON c.id=d.case_id WHERE d.kind='bill' AND "
+                          "d.status != 'dismissed' AND c.status='open' AND d.id != ? AND d.vendor LIKE 'gulf%'", (doc['id'],)):
+        o = _doc_dict(r)
+        if (o.get('jobber') or {}).get('invoice_id') or (json.loads(r['case_jobber'] or '{}').get('invoice') or {}).get('id'):
+            continue
+        who = r['case_client'] or o.get('client_name') or ''
+        if not any(who == n or _same_account(who, n) for n in names):
+            continue
+        if client_id and r['cc'] and r['cc'] != client_id:
+            continue
+        if bill_service_month(o) != ym:
+            continue
+        amt = o.get('total') if o.get('total') is not None else o.get('subtotal')
+        site = conn.execute('SELECT our_bill FROM pump_dive_sites WHERE name=?', (who,)).fetchone()
+        price = _money(site['our_bill']) if site and site['our_bill'] else None
+        if price is None:
+            price = (suggest_invoice(o, {})['line_items'] or [{}])[0].get('unit_price')
+        out.append({'id': o['id'], 'case_id': o['case_id'], 'doc_number': o.get('doc_number') or '', 'total': amt,
+                    'line_items': [{'name': 'Lake filter cleaning',
+                                    'description': f"Lake filter cleaning - {date(ym[0], ym[1], 1).strftime('%B %Y')}"
+                                                   f"{' (Gulfshore #' + o['doc_number'] + ')' if o.get('doc_number') else ''}",
+                                    'quantity': 1, 'unit_price': price, 'taxable': False}]})
+    return out
+
+
+def link_diver_bills(bills, res, client_id, on_doc_id, actor):
+    """The Gulfshore bills put on the Wettech bill's invoice: linked to it (payable once it's sent)."""
+    for b in bills:
+        mark_bill_invoiced(b['id'], {**res, 'client_id': client_id}, actor, on_doc_id=on_doc_id)
+        if b.get('case_id'):
+            diver_invoice_linked(b['case_id'], {'id': res.get('invoice_id'), 'status': res.get('invoice_status') or 'draft'},
+                                 actor)
+
+
 def diver_client(conn, doc):
     """(account, Jobber client id) for Jordan's site label, matched the way the pump
     bills are: the office's saved site names first ("Rosewood" -> the Rosewood
@@ -2875,22 +2986,34 @@ def check_diver_billed(case_id, actor='Pumps'):
             return None
         case, doc = dict(case), _doc_dict(doc)
         j = json.loads(case.get('jobber') or '{}')
+        acct = next((a for a in accounts(conn) if a['name'] == case.get('client_name')), None) or \
+            next((a for a in accounts(conn) if _same_account(a['name'], case.get('client_name') or '')), None) or {}
+        inside = bool((acct.get('lake') or {}).get('billed_inside')) or lake_billed_inside(conn, case.get('client_name'))
         if (j.get('invoice') or {}).get('id'):
+            # Linked already: billed inside a larger invoice (Wild Blue) is OK to pay once that invoice is sent.
+            if inside and (j['invoice'].get('status') or 'draft') not in INVOICE_NOT_SENT and \
+                    not _state_get(f'pay_ok:{case_id}', conn=conn):
+                _state_set(f'pay_ok:{case_id}', {'at': _now_text(), 'by': actor}, conn=conn)
+                _event(conn, actor, 'vendor bill OKd to pay', f"billed inside our invoice #{j['invoice'].get('number')}",
+                       case_id=case_id)
+                conn.commit()
             return {'billed': True, 'invoice': j['invoice']}
-        acct = next((a for a in accounts(conn) if a['name'] == case.get('client_name')), None) or {}
         client_id = case.get('jobber_client_id') or ((acct.get('pump') or {}).get('jobber_client_id'))
-        inside = bool((acct.get('lake') or {}).get('billed_inside'))
+        month_inv = diver_month_invoice(conn, case, doc, acct) if inside else None
     finally:
         conn.close()
-    found, err = None, ''
-    if not (client_id or case.get('client_name') or doc.get('client_name')):
+    found, err = month_inv, ''
+    if found:
+        pass                    # billed inside the account's monthly invoice (Wild Blue)
+    elif not (client_id or case.get('client_name') or doc.get('client_name')):
         pass                    # whose it is isn't known: the to-do asks
     elif jobber_status()['connected']:
         try:
             client_id = client_id or invoice_client(doc, case)
             if client_id:
                 when = date.fromisoformat(_iso_date(doc.get('doc_date')) or _today().isoformat())
-                lo, hi = (when - timedelta(days=10)).isoformat(), (when + timedelta(days=45)).isoformat()
+                lo = (when - timedelta(days=40 if inside else 10)).isoformat()
+                hi = (when + timedelta(days=45)).isoformat()
                 recs = [r for r in client_records(client_id, 'invoice') if r['status'] not in ('voided', 'bad_debt')
                         and lo <= (r['created'] or '') <= hi]
                 if not recs:
@@ -2912,8 +3035,28 @@ def check_diver_billed(case_id, actor='Pumps'):
         err = 'Jobber is not connected'
     num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
     key = f"gulfshore-unbilled:{doc['id']}"
+    twice = None
+    if found and not inside:
+        # Billed out only if our invoice bills the lake filter cleaning (Nov 2026): one already sent without it is
+        # a to-do - not linked, and not Christian's to pay; a draft without it waits for the line.
+        covers = invoice_covers_lake(found['id']) if found.get('id') else None
+        if covers is False:
+            if (found.get('status') or 'draft') not in INVOICE_NOT_SENT:
+                twice = found
+            err = err or f"our invoice #{found['number']} has no lake filter line - add it there"
+            found = None
     conn = _conn()
     try:
+        if twice:
+            add_todo(conn, f"gulfshore-twice:{doc['id']}:{twice['number']}",
+                     f"Gulfshore invoice{num} - {case.get('client_name') or doc.get('client_name')}: already invoiced - "
+                     "don't bill twice; add a line or write off?",
+                     f"Our invoice #{twice['number']} for the month went to the client "
+                     f"({(twice.get('status') or '').replace('_', ' ')}) without Jordan's lake filter cleaning. Add a "
+                     "line in Jobber (or a new invoice for it), or write it off - then link it here. It isn't Christian's "
+                     "to pay until it's billed.", {'case_id': case_id})
+            conn.commit()
+            return {'billed': False, 'invoice': None, 'already_invoiced': twice, 'error': err}
         if found:
             j['invoice'] = {'id': found['id'], 'number': found['number'], 'uri': found.get('uri') or '',
                             'status': found['status'], 'total': found.get('total')}
@@ -2927,9 +3070,10 @@ def check_diver_billed(case_id, actor='Pumps'):
                 _set_step(conn, case_id, 'closed', at=_today().isoformat(), by=actor)
             conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL',
                          (_now_text(), actor, key))
+            sent = found['status'] not in INVOICE_NOT_SENT
             _event(conn, actor, 'billed out', f"Gulfshore{num} is on our Jobber invoice #{found['number']} to the client - "
-                                              "Christian can pay it", case_id=case_id, doc_id=doc['id'])
-            if inside and not _state_get(f'pay_ok:{case_id}', conn=conn):
+                   + ("Christian can pay it" if sent else "payable once it's sent"), case_id=case_id, doc_id=doc['id'])
+            if inside and sent and not _state_get(f'pay_ok:{case_id}', conn=conn):
                 # Billed inside a larger invoice (Wild Blue): linked, and OK to pay.
                 _state_set(f'pay_ok:{case_id}', {'at': _now_text(), 'by': actor}, conn=conn)
                 _event(conn, actor, 'vendor bill OKd to pay', f"billed inside our invoice #{found['number']}",
@@ -3115,6 +3259,12 @@ def check_all_diver_bills(actor='Jobber sync'):
                                           "AND vendor='Gulfshore' AND COALESCE(json_extract(jobber, '$.invoice.id'), '')=''")]
         for i in ids:
             reread_diver_bill(conn, i, actor)
+        # Linked, billed inside a larger invoice, not OK'd yet: OK'd once that invoice is sent.
+        ids += [r[0] for r in conn.execute("SELECT id FROM pump_cases WHERE status='open' AND category='diver' AND "
+                                           "vendor='Gulfshore' AND COALESCE(json_extract(jobber, '$.invoice.id'), '')!='' AND "
+                                           "vendor_paid_on IS NULL").fetchall()
+                if lake_billed_inside(conn, conn.execute('SELECT client_name FROM pump_cases WHERE id=?', (r[0],)).fetchone()[0])
+                and not _state_get(f'pay_ok:{r[0]}', conn=conn)]
         # Linked to an invoice already sent but left on "Send invoice" (before Oct 19 2026): closed.
         for r in conn.execute("SELECT id FROM pump_cases WHERE status='open' AND category='diver' AND vendor='Gulfshore' "
                               "AND COALESCE(json_extract(jobber, '$.invoice.status'), 'draft') "
@@ -10151,11 +10301,18 @@ def bills_to_pay(conn):
                    + (f" (visit {mv['date']})" if mv.get('date') else '')
                    + (f" - {mv['note']}" if mv.get('note') else ''))
         else:
+            diver = is_diver_case(c)
+            if diver and invoiced and (inv.get('status') or 'draft') in INVOICE_NOT_SENT:
+                # Gulfshore (Nov 2026): billed only once our invoice has gone to the client - a draft can stay linked,
+                # but the bill waits for it to be sent.
+                invoiced = False
             payable = invoiced or pay['state'] == 'due'
             month_inv = ''
             num = inv.get('number') or c.get('sei_invoice_number') or ''
             why = (f"invoiced{' #' + num if num else ''}{' (' + inv['status'].replace('_', ' ') + ')' if inv.get('status') else ''}"
-                   if invoiced else 'not invoiced yet')
+                   if invoiced else
+                   f"on our {(inv.get('status') or 'draft').replace('_', ' ')} invoice{' #' + num if num else ''} - payable once it's sent"
+                   if diver and inv.get('id') else 'not invoiced yet')
             quoted = bool(c.get('vendor_quote_number') or ((c.get('jobber') or {}).get('quote') or {}).get('id'))
             if not invoiced and not payable and bill and maintenance_bill(_doc_dict(bill)) and not quoted:
                 # A monthly account (University Village, Oct 2026): pay once the month is billed on its job.
@@ -11440,6 +11597,22 @@ def h_doc_invoice(actor, doc_id):
         case = dict(conn.execute('SELECT * FROM pump_cases WHERE id=?', (doc['case_id'],)).fetchone()) if doc['case_id'] else {}
     finally:
         conn.close()
+    if is_diver_bill(doc):
+        # Gulfshore is billed on the pump invoice, never on one of its own (Nov 2026).
+        inv = (json.loads(case.get('jobber') or '{}').get('invoice') or {}) if case else {}
+        if not inv.get('id'):
+            y, m = bill_service_month(doc)
+            try:
+                mb = month_billed(case.get('client_name') or doc.get('client_name') or '', y, m)
+            except (JobberError, ValueError):
+                mb = None
+            inv = (mb or {}).get('invoice') or {}
+        if inv.get('number'):
+            return {'success': False, 'existing_invoice': inv,
+                    'error': f"Gulfshore is billed on the pump invoice - link #{inv['number']} instead of drafting "
+                             "another."}, 409
+        return {'success': False, 'error': 'Gulfshore is billed on the pump invoice - wait for the WetTech bill and '
+                                           'bill both on the pump invoice.'}, 409
     if actor == BOT and case:
         conn = _conn()
         try:
@@ -11471,10 +11644,22 @@ def h_doc_invoice(actor, doc_id):
         job_id = (json.loads(case.get('jobber') or '{}').get('job') or {}).get('id') or \
             ((sugg.get('job') or {}).get('id') if (sugg.get('client_id') in (None, client_id)) else '') or ''
     on_job = bool(sugg.get('job') and job_id == sugg['job']['id'])
+    lines = list(data.get('line_items') or sugg['line_items'])
+    ticked = {int(x) for x in (data.get('also_doc_ids') or []) if str(x).isdigit()}
+    divers = []
+    if maintenance_bill(doc):
+        # The month's Gulfshore bill for the site goes on this same invoice (Nov 2026) - not one of its own.
+        conn = _conn()
+        try:
+            divers = [b for b in diver_bills_for_month(conn, doc, case, client_id) if b['id'] not in ticked]
+        finally:
+            conn.close()
+        for b in divers:
+            lines += b['line_items']
     # A monthly/quarterly: the visit is marked complete first, then invoiced, as a draft.
     visit = complete_visit_for_bill(doc, case, sugg['job'], actor) if on_job else None
     try:
-        res = create_draft_invoice(doc_id, client_id, data.get('line_items') or sugg['line_items'],
+        res = create_draft_invoice(doc_id, client_id, lines,
                                    data.get('subject') or sugg['subject'], job_id or '', actor,
                                    force=bool(data.get('force')), visit_ids=_visit_ids(visit))
     except ExistingDraft as e:
@@ -11484,6 +11669,9 @@ def h_doc_invoice(actor, doc_id):
     if on_job:
         invoiced_on_job(doc, case, sugg['job'], actor)
         res['visit'] = visit
+    if divers:
+        link_diver_bills(divers, res, client_id, doc_id, actor)
+        res['gulfshore'] = [b['id'] for b in divers]
     # Other bills billed on this same invoice (the office ticks them in the window; their lines are in it).
     also = [int(x) for x in (data.get('also_doc_ids') or []) if str(x).isdigit() and int(x) != doc_id]
     conn = _conn()
@@ -16127,10 +16315,24 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
             sugg = invoice_suggestion(doc, case)
             if not sugg.get('job'):
                 return None
+            lines = list(sugg['line_items'])
+            divers = []
+            if maintenance_bill(doc):
+                # The month's Gulfshore bill for the site on the same invoice (Nov 2026).
+                conn = _conn()
+                try:
+                    divers = diver_bills_for_month(conn, doc, case, sugg['client_id'])
+                finally:
+                    conn.close()
+                for b in divers:
+                    lines += b['line_items']
             visit = complete_visit_for_bill(doc, case, sugg['job'], actor)
-            res = create_draft_invoice(doc_id, sugg['client_id'], sugg['line_items'], sugg['subject'],
+            res = create_draft_invoice(doc_id, sugg['client_id'], lines, sugg['subject'],
                                        sugg['job']['id'], actor, visit_ids=_visit_ids(visit))
             invoiced_on_job(doc, case, sugg['job'], actor)
+            if divers:
+                link_diver_bills(divers, res, sugg['client_id'], doc_id, actor)
+                res['gulfshore'] = [b['id'] for b in divers]
             return {**res, 'job': sugg['job'], 'visit': visit}
         except (JobberError, ValueError) as e:
             return _invoice_pending(doc_id, e)

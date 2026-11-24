@@ -4386,6 +4386,166 @@ class PumpsTest(unittest.TestCase):
         finally:
             conn.close()
 
+    def _gs_case(self, client, number, date='2026-10-20', vendor='Gulfshore', desc='Lake filter cleaning', total=125):
+        conn = P._conn()
+        try:
+            cid = P.create_case(conn, {'title': f'{vendor} {number}', 'client_name': client,
+                                       'category': 'diver' if vendor == 'Gulfshore' else 'maintenance', 'vendor': vendor}, 'test')
+            conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, doc_date, client_name, total, file_name, "
+                         "case_id, created_at, email_date, description) VALUES ('bill', 'filed', ?, ?, ?, ?, ?, 'gsx.pdf', ?, "
+                         "'2026-10-01', '2026-10-01', ?)", (vendor, number, date, client, total, cid, desc))
+            did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+            conn.execute("UPDATE pump_cases SET vendor_bill_number=?, vendor_bill_total=? WHERE id=?", (number, total, cid))
+            conn.commit()
+        finally:
+            conn.close()
+        return cid, did
+
+    def _gs_cleanup(self):
+        conn = P._conn()
+        conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id IN (SELECT case_id FROM pump_docs WHERE file_name='gsx.pdf')")
+        conn.execute("UPDATE pump_docs SET status='dismissed' WHERE file_name='gsx.pdf'")
+        conn.commit()
+        conn.close()
+
+    def _set_case_invoice(self, cid, status, number='37555'):
+        conn = P._conn()
+        conn.execute('UPDATE pump_cases SET jobber=?, sei_invoice_number=? WHERE id=?',
+                     (json.dumps({'invoice': {'id': 'I-' + number, 'number': number, 'status': status}}), number, cid))
+        conn.commit()
+        conn.close()
+
+    def test_gulfshore_payable_only_once_the_invoice_is_sent(self):
+        """Nov 2026: a Gulfshore bill on our draft invoice stays linked but isn't payable; once the invoice is sent
+        (awaiting payment) it is - the 5-day wait as for every bill."""
+        cid, _ = self._gs_case('Draftwait Lakes', 'GS-DW1')
+        try:
+            self._set_case_invoice(cid, 'draft')
+            row = lambda: {b['case_id']: b for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                           for b in g['bills']}[cid]
+            r = row()
+            self.assertFalse(r['payable'], r)
+            self.assertIn("payable once it's sent", r['why'])
+            self._set_case_invoice(cid, 'awaiting_payment')
+            r = row()
+            self.assertTrue(r['payable'] and r['ready'], r)
+        finally:
+            self._gs_cleanup()
+
+    def test_no_invoice_drafted_from_a_gulfshore_bill(self):
+        """Nov 2026: Gulfshore is billed on the pump invoice - /docs/<id>/invoice on its bill is refused (409), with
+        the pump invoice when there's one."""
+        cid, did = self._gs_case('Nodraft Lakes', 'GS-ND1')
+        try:
+            r = self.c.post(f'/pumps/api/docs/{did}/invoice', json={'client_id': 'C-ND'})
+            self.assertEqual(r.status_code, 409)
+            self.assertIn('wait for the WetTech bill', r.get_json()['error'])
+            self._set_case_invoice(cid, 'draft', '37556')
+            r = self.c.post(f'/pumps/api/docs/{did}/invoice', json={'client_id': 'C-ND'})
+            self.assertEqual(r.status_code, 409)
+            self.assertEqual(r.get_json()['existing_invoice']['number'], '37556')
+        finally:
+            self._gs_cleanup()
+
+    def test_wettech_maintenance_draft_picks_up_the_gulfshore_bill(self):
+        """Nov 2026: the WetTech maintenance bill for the site and month is drafted - the open Gulfshore bill for that
+        site/month goes on the same invoice and is linked to it; one invoice, not two."""
+        gcid, gdid = self._gs_case('Onebill Lakes', 'GS-OB1', date='2026-10-22')
+        _, odid = self._gs_case('Onebill Lakes', 'GS-OB2', date='2026-09-10')   # another month: not this one
+        wcid, wdid = self._gs_case('Onebill Lakes', 'W-OB1', date='2026-10-15', vendor='Wettech',
+                                   desc='Quarterly maintenance for OCTOBER 2026', total=400)
+        calls = []
+        saved = (P.invoice_suggestion, P.create_draft_invoice)
+        P.invoice_suggestion = lambda doc, case, client_id=None: {
+            'line_items': [{'name': 'Pump maintenance', 'description': 'Quarterly', 'quantity': 1, 'unit_price': 500}],
+            'subject': 'Pump service - Onebill Lakes - October 2026', 'job': None, 'client_id': client_id}
+
+        def fake_create(doc_id, client_id, lines, subject, job_id='', actor='', **k):
+            calls.append((doc_id, lines))
+            return {'invoice_id': 'I-OB', 'invoice_number': '37600', 'invoice_uri': '', 'invoice_status': 'draft'}
+        P.create_draft_invoice = fake_create
+        try:
+            r = self.c.post(f'/pumps/api/docs/{wdid}/invoice', json={'client_id': 'C-OB'}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual(len(calls), 1, 'one invoice')
+            self.assertEqual(calls[0][0], wdid)
+            self.assertEqual([li['name'] for li in calls[0][1]], ['Pump maintenance', 'Lake filter cleaning'])
+            self.assertEqual(r['invoice']['gulfshore'], [gdid])
+            g = self.case(gcid)
+            self.assertEqual(g['jobber']['invoice']['number'], '37600')
+            self.assertNotIn('invoice', self.case(P._conn().execute('SELECT case_id FROM pump_docs WHERE id=?',
+                                                                    (odid,)).fetchone()[0])['jobber'])
+            row = {b['case_id']: b for gg in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors']
+                   for b in gg['bills']}[gcid]
+            self.assertFalse(row['payable'], 'on a draft: not payable yet')
+        finally:
+            P.invoice_suggestion, P.create_draft_invoice = saved
+            self._gs_cleanup()
+
+    def test_gulfshore_not_billed_out_by_an_invoice_without_the_lake_line(self):
+        """Nov 2026: the month's pump invoice was sent without the lake filter cleaning - not linked and not "Christian
+        can pay it": a "already invoiced - don't bill twice" to-do. With the line, it's linked."""
+        cid, did = self._gs_case('Twicecheck Lakes', 'GS-TC1')
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P.month_billed, P.invoice_covers_lake)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: 'C-TC'
+        P.client_records = lambda cid_, kind: []
+        P.invoices_named = lambda *a, **k: []
+        P.month_billed = lambda client, y, m: {'job': {}, 'invoice': {'id': 'I-TC', 'number': '37610',
+                                                                      'status': 'awaiting_payment', 'uri': ''}}
+        covers = {'v': False}
+        P.invoice_covers_lake = lambda iid: covers['v']
+        try:
+            r = P.check_diver_billed(cid)
+            self.assertFalse(r['billed'])
+            self.assertNotIn('invoice', self.case(cid)['jobber'])
+            conn = P._conn()
+            t = conn.execute('SELECT title FROM pump_todos WHERE key=?', (f'gulfshore-twice:{did}:37610',)).fetchone()
+            conn.close()
+            self.assertIn("don't bill twice", t['title'])
+            covers['v'] = True
+            self.assertTrue(P.check_diver_billed(cid)['billed'])
+            self.assertEqual(self.case(cid)['jobber']['invoice']['number'], '37610')
+        finally:
+            P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P.month_billed, P.invoice_covers_lake = saved
+            self._gs_cleanup()
+
+    def test_billed_inside_ok_to_pay_once_the_larger_invoice_is_issued(self):
+        """Wild Blue (Nov 2026): linked to the monthly invoice while it's a draft - not OK'd yet; once it's issued
+        the next check OKs it to pay. The month's invoice is found on the account's own recurring job."""
+        cid, _ = self._gs_case('Wild Blue', 'GS-WB9', date='2026-10-20')
+        saved = (P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P.month_billed, P.job_invoices)
+        P.jobber_status = lambda: {'connected': True}
+        P.invoice_client = lambda doc, case=None: None
+        P.client_records = lambda cid_, kind: []
+        P.invoices_named = lambda *a, **k: []
+        P.month_billed = lambda client, y, m: None
+        conn = P._conn()
+        if not conn.execute("SELECT 1 FROM pump_maint_accounts WHERE name='Wild Blue'").fetchone():
+            conn.execute("INSERT INTO pump_maint_accounts (name) VALUES ('Wild Blue')")
+        before = conn.execute("SELECT jobber_job_id FROM pump_maint_accounts WHERE name='Wild Blue'").fetchone()[0]
+        conn.execute("UPDATE pump_maint_accounts SET jobber_job_id='J-WB' WHERE name='Wild Blue'")
+        conn.commit()
+        acct = next((a for a in P.accounts(conn) if a['name'] == 'Wild Blue'), {})
+        conn.close()
+        self.addCleanup(lambda: (lambda c: (c.execute("UPDATE pump_maint_accounts SET jobber_job_id=? WHERE name='Wild Blue'",
+                                                      (before,)), c.commit(), c.close()))(P._conn()))
+        job = (acct.get('pump') or {}).get('jobber_job_id')
+        self.assertTrue(job, "Wild Blue's pump account has its recurring job")
+        P.job_invoices = lambda jid: [{'id': 'I-WB9', 'number': '2542', 'status': 'draft', 'date': '2026-10-03',
+                                       'uri': '', 'total': 3000}]
+        try:
+            P.check_diver_billed(cid)
+            self.assertEqual(self.case(cid)['jobber']['invoice']['number'], '2542', 'found on the recurring job')
+            self.assertFalse(P._state_get(f'pay_ok:{cid}'), 'draft: not OK to pay yet')
+            self._set_case_invoice(cid, 'awaiting_payment', '2542')
+            P.check_diver_billed(cid)
+            self.assertTrue(P._state_get(f'pay_ok:{cid}'), 'issued: OK to pay')
+        finally:
+            P.jobber_status, P.invoice_client, P.client_records, P.invoices_named, P.month_billed, P.job_invoices = saved
+            P._state_set(f'pay_ok:{cid}', None)
+            self._gs_cleanup()
+
     def test_tracking_scope_not_a_wettech_job(self):
         """Nov 24 2026 (6): our own crew's pump quote isn't tracked on its own; an account set "Not a Wettech job -
         don't track" isn't offered; a job can be taken off Pumps (soft) with its Jobber records not offered again."""
