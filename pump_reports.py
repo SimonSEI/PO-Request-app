@@ -84,6 +84,17 @@ DEFAULT_VENDORS = [{
     'sender_match': ['nemwinc', 'naples electric'],
     'contact_email': 'paul@nemwinc.com',
     'contact_name': 'Paul',
+}, {
+    # Pump station PM at Hodges Funeral Home / Naples Memorial Gardens (GT Service, tri-annual - Nov 2026).
+    'key': 'siteone',
+    'display': 'SiteOne',
+    'names': ['SiteOne Landscape Supply, LLC', 'SiteOne Landscape Supply', 'SiteOne Landscape', 'SiteOne'],
+    'emails': ['siteone.com'],
+    'phones': [],
+    'other': [],
+    'sender_match': ['siteone'],
+    'contact_email': 'PSochar@siteone.com',
+    'contact_name': 'SiteOne',
 }]
 
 # A whole cell that is a technician label: "Service Technician Signature",

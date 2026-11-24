@@ -1262,12 +1262,28 @@ async function loadVInvoices(){
     ${j.invoices.map(x => { const [cls, label] = VI_STATE[x.state] || ['', x.state];
       return `<tr><td>${x.case_id ? `<a href="#" onclick="event.preventDefault();openCase(${x.case_id})">${esc(x.client_name || x.case_title)}</a>` : esc(x.client_name)}${x.site ? `<div class="note">${esc(x.site)}</div>` : ''}<div class="note">${esc(x.what)}</div></td>
       <td>${esc(x.date)}</td>
-      <td><a target="_blank" href="/pumps/api/docs/${x.id}/file">${esc(x.vendor)}${x.number ? ' #' + esc(x.number) : ''}</a></td>
-      <td class="num">${money(x.total ?? x.subtotal)}</td>
+      <td><a target="_blank" href="/pumps/api/docs/${x.id}/file">${x.vendor ? esc(x.vendor) : '<span class="warn">Unknown vendor</span>'}${x.number ? ' #' + esc(x.number) : ''}</a>
+        <div><button class="btn s" title="Correct the vendor, total or bill date as read" onclick='viEdit(${JSON.stringify({id: x.id, vendor: x.vendor, total: x.total ?? x.subtotal, date: x.bill_date || x.date}).replace(/'/g, "&#39;")})'>✎ Edit</button></div></td>
+      <td class="num">${x.no_amount ? '<b class="bad" title="Not ready to pay until it is checked">Couldn\'t read the amount - check it</b>' : money(x.total ?? x.subtotal)}</td>
       <td>${x.ours.number ? (x.ours.uri ? `<a target="_blank" href="${esc(x.ours.uri)}">#${esc(x.ours.number)} ↗</a>` : '#' + esc(x.ours.number)) + (x.ours.status ? `<div class="note">${esc(x.ours.status.replace('_', ' '))}</div>` : '') : ''}
         ${x.case_id ? `<div style="display:flex;gap:4px;margin-top:2px"><input type="text" id="viOurs${x.id}" placeholder="${x.ours.number ? 'Change #' : 'Our Jobber invoice #'}" style="width:130px" onkeydown="if(event.key==='Enter')viLinkOurs(${x.id}, ${x.case_id})"><button class="btn s" onclick="viLinkOurs(${x.id}, ${x.case_id})">Save</button></div>` : '<span class="note">-</span>'}</td>
       <td><span class="chip ${cls}">${label}</span>${x.paid_on ? `<div class="note">paid ${esc(x.paid_on)}</div>` : ''}${x.state === 'cancelled' && x.case_id ? `<div><button class="btn s" title="Cancelled by mistake? Back to active" onclick="caseRestore(${x.case_id}).then(loadVInvoices)">↺ Restore</button></div>` : ''}</td></tr>`; }).join('')}</tbody></table>`
     : '<div class="empty">No vendor invoices here.</div>';
+}
+function viEdit(x){
+  openModal('Correct the vendor invoice', `<div class="form">
+    <label>Vendor<input type="text" id="vie_vendor" value="${esc(x.vendor || '')}" placeholder="SiteOne, Wettech, Gulfshore…"></label>
+    <label>Total $<input type="text" id="vie_total" value="${x.total != null ? esc(x.total) : ''}"></label>
+    <label>Bill date<input type="date" id="vie_date" value="${esc(x.date || '')}"></label></div>
+    <div class="note">Only what was read changes - nothing is marked paid.</div>`,
+    `<button class="btn" onclick="closeModal()">Cancel</button><button class="btn p" onclick="viEditSave(${x.id})">Save</button>`);
+}
+async function viEditSave(id){
+  const body = {vendor: document.getElementById('vie_vendor').value.trim(), total: document.getElementById('vie_total').value.trim(),
+                bill_date: document.getElementById('vie_date').value};
+  const j = await api('/docs/' + id + '/bill_fields', {method: 'POST', body});
+  if (!j.success) { toast(j.error, true); return; }
+  closeModal(); undoToast('Vendor invoice corrected.', () => undoLast().then(loadVInvoices)); loadVInvoices();
 }
 async function poClaudeCheck(btn){
   btn.disabled = true; btn.textContent = 'Checking…';

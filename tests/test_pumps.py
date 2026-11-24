@@ -4546,6 +4546,134 @@ class PumpsTest(unittest.TestCase):
             P._state_set(f'pay_ok:{cid}', None)
             self._gs_cleanup()
 
+    SITEONE_TEXT = """SiteOne Landscape Supply, LLC
+INVOICE
+Invoice Number: 172852774-001
+Invoice Date: 11/18/2026
+Bill To:
+Stahlman England Irrigation
+Ship To:
+Naples Memorial Gardens
+PO Number: S-6270 Naples Memorial
+Description
+GT Service - pump station PM (tri-annual)
+Subtotal: 675.00
+Total: $675.00
+Please remit payment to:
+SiteOne Landscape Supply, LLC
+PO Box 123
+"""
+
+    def test_siteone_bill_read_without_claude(self):
+        """Nov 2026, SiteOne #172852774-001 ($675) was filed with vendor "" and no total when Claude was down: the
+        simple reader gets SiteOne, the total, its invoice #, the PO and the site; an unknown vendor comes from
+        "Please remit payment to:" and "Amount Due:" is the total."""
+        x = P._regex_extract(self.SITEONE_TEXT, 'billing@siteone.com', 'SiteOne Confirmation Invoice', 'inv.pdf')
+        self.assertEqual(x['vendor'], 'SiteOne')
+        self.assertEqual(x['total'], 675.0)
+        self.assertEqual(x['doc_number'], '172852774-001')
+        self.assertEqual(x['po_number'], 'S-6270')
+        self.assertEqual(x['client_name'], 'Naples Memorial')
+        self.assertEqual(x['doc_date'], '2026-11-18')
+        y = P._regex_extract("INVOICE 5521\nPump repair\nAmount Due: $1,234.50\nPlease remit payment to:\nAcme Pump Co\n")
+        self.assertEqual((y['vendor'], y['total']), ('Acme Pump Co', 1234.5))
+        a = P.match_site_alias({'client_name': 'Naples Memorial', 'po_number': 'S-6270', 'site': 'Naples Memorial Gardens'})
+        self.assertTrue(a and a['client_name'].startswith('Hodges Funeral Home'))
+        self.assertEqual(a['job_label'], '#1865 Tri-Annual Pump 1125')
+
+    def test_unread_amount_not_ready_and_edit_bill_fields(self):
+        """Nov 2026: a bill read with no vendor and no amount shows as an unknown vendor with "Couldn't read the amount"
+        - never "Wettech" - and isn't ready to pay even once invoiced. Edit (office or agent "bill_fields") sets the
+        vendor, total and date, logged with Undo; nothing is marked paid."""
+        conn = P._conn()
+        cid = P.create_case(conn, {'title': 'Unread bill', 'client_name': 'Unread Gardens'}, 'test')
+        conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, client_name, file_name, case_id, created_at, "
+                     "email_date) VALUES ('bill', 'filed', '', '172852774-001', 'Unread Gardens', 'ur.pdf', ?, "
+                     "'2026-10-01', '2026-10-01')", (cid,))
+        did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.execute("UPDATE pump_cases SET vendor='', sei_invoice_number='37144' WHERE id=?", (cid,))
+        P._set_step(conn, cid, 'vendor_bill', at='2026-10-01', by='test')
+        conn.commit()
+        conn.close()
+        try:
+            row = next(x for x in self.c.get('/pumps/api/vendor_invoices').get_json()['invoices'] if x['id'] == did)
+            self.assertEqual(row['vendor'], '')
+            self.assertTrue(row['no_amount'])
+            b = lambda: next(x for g in self.c.get('/pumps/api/bills_to_pay').get_json()['vendors'] for x in g['bills']
+                             if x['case_id'] == cid)
+            self.assertFalse(b()['payable'])
+            self.assertIn("couldn't read the amount", b()['why'])
+            r = self.c.post(f'/pumps/api/docs/{did}/bill_fields', json={'vendor': 'SiteOne Landscape Supply',
+                                                                       'total': '675', 'bill_date': '2026-11-18'}).get_json()
+            self.assertTrue(r['success'], r)
+            self.assertEqual((r['doc']['vendor'], r['doc']['total'], r['doc']['doc_date']), ('SiteOne', 675.0, '2026-11-18'))
+            self.assertTrue(b()['payable'])
+            self.assertFalse(self.case(cid).get('vendor_paid_on'), 'never marked paid')
+            conn = P._conn()
+            try:
+                act = P.agent_action(conn, {'type': 'bill_fields', 'doc_id': did, 'total': '680'})
+            finally:
+                conn.close()
+            self.assertEqual(act['path'], f'/docs/{did}/bill_fields')
+            self.assertFalse(P._AGENT_NEVER.search(act['path']))
+            with self.assertRaises(ValueError):
+                conn = P._conn()
+                try:
+                    P.agent_action(conn, {'type': 'bill_fields', 'doc_id': did})
+                finally:
+                    conn.close()
+        finally:
+            conn = P._conn()
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
+            conn.commit()
+            conn.close()
+
+    def test_siteone_flat_contract_links_the_period_invoice(self):
+        """Nov 2026, SiteOne's pump station PM at Hodges (tri-annual, job #1865 at $1,125): the bill is linked to that
+        period's invoice on the job (#37144) - no draft of its own, no 30% markup; without one, a to-do to bill it."""
+        conn = P._conn()
+        cid = P.create_case(conn, {'title': 'Hodges PM', 'client_name': 'Naples Memorial', 'vendor': 'SiteOne',
+                                   'category': 'maintenance'}, 'test')
+        conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, doc_date, client_name, po_number, total, "
+                     "file_name, case_id, created_at, description) VALUES ('bill', 'filed', 'SiteOne', '172852774-001', "
+                     "'2026-11-18', 'Naples Memorial', 'S-6270', 675, 'so.pdf', ?, '2026-11-18', 'GT Service - pump station PM')",
+                     (cid,))
+        did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.commit()
+        conn.close()
+        saved = (P.jobber_status, P.job_invoices, P.link_jobber_invoice, P.create_draft_invoice, P.AUTO_DRAFT_INVOICES)
+        linked, drafted, invs = [], [], {'v': []}
+        P.jobber_status = lambda: {'connected': True}
+        P.job_invoices = lambda jid: invs['v'] if jid == 'Z2lkOi8vSm9iYmVyL0pvYi80MzQ4MTI4OA==' else []
+        P.link_jobber_invoice = lambda c, n, a='x': linked.append((c, n))
+        P.create_draft_invoice = lambda *a, **k: drafted.append(a)
+        P.AUTO_DRAFT_INVOICES = True
+        try:
+            r = P.auto_draft_invoice(did)
+            self.assertFalse(r['billed'])
+            conn = P._conn()
+            t = conn.execute('SELECT title, detail FROM pump_todos WHERE key=?', (f'flat-unbilled:{did}',)).fetchone()
+            conn.close()
+            self.assertIn('period not billed yet', t['title'])
+            self.assertIn('#1865 Tri-Annual Pump 1125', t['detail'])
+            invs['v'] = [{'id': 'I-OLD', 'number': '36000', 'status': 'paid', 'date': '2026-03-10'},
+                         {'id': 'I-37144', 'number': '37144', 'status': 'awaiting_payment', 'date': '2026-11-05'}]
+            r = P.check_all_flat_bills()
+            self.assertEqual(linked, [(cid, '37144')])
+            self.assertEqual(drafted, [], 'never a draft of its own')
+            doc = P._doc_dict(P._conn().execute('SELECT * FROM pump_docs WHERE id=?', (did,)).fetchone())
+            P.jobber_status = lambda: {'connected': False}
+            sugg = P.invoice_suggestion(doc, {})
+            self.assertEqual((sugg['markup_pct'], sugg['line_items'][0]['unit_price']), (0, 675))
+        finally:
+            P.jobber_status, P.job_invoices, P.link_jobber_invoice, P.create_draft_invoice, P.AUTO_DRAFT_INVOICES = saved
+            conn = P._conn()
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
+            conn.commit()
+            conn.close()
+
     def test_tracking_scope_not_a_wettech_job(self):
         """Nov 24 2026 (6): our own crew's pump quote isn't tracked on its own; an account set "Not a Wettech job -
         don't track" isn't offered; a job can be taken off Pumps (soft) with its Jobber records not offered again."""
