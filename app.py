@@ -508,9 +508,11 @@ Return ONLY valid JSON, no explanation:
                     except ValueError:
                         continue
             print(f"  ✅ Claude extracted vendor invoice: {result['sub_contractor']} #{result['invoice_number']}")
+            note_po_claude_problem('')
             return result
         except Exception as e:
             print(f"  ⚠ Claude extraction failed, falling back to regex: {e}")
+            note_po_claude_problem(e, 'reading vendor invoices')
 
     # ── Regex fallback ──────────────────────────────────────────────────────
     # Vendor name: first non-empty line that looks like a company name
@@ -2560,6 +2562,26 @@ def set_setting(key, value):
         return False
 
 
+def note_po_claude_problem(problem, where=''):
+    """The PO@ vendor-invoice checker's last Claude failure ('' once it works) - shown on the Pumps page so a
+    "credit balance is too low" doesn't fall back to regex unnoticed (Nov 2026)."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        try:
+            conn.execute('CREATE TABLE IF NOT EXISTS pump_state (key TEXT PRIMARY KEY, value TEXT)')
+            row = conn.execute("SELECT value FROM pump_state WHERE key='po_claude_problem'").fetchone()
+            had = bool(row and (json.loads(row[0] or '{}') or {}).get('problem'))
+            if problem or had:
+                conn.execute("INSERT OR REPLACE INTO pump_state (key, value) VALUES ('po_claude_problem', ?)",
+                             (json.dumps({'problem': str(problem)[:300], 'where': where,
+                                          'at': datetime.now().strftime('%Y-%m-%d %H:%M')}),))
+                conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
 def is_claude_matching_enabled():
     """Check if Claude API matching is enabled"""
     if not ANTHROPIC_AVAILABLE or not ANTHROPIC_API_KEY:
@@ -2851,16 +2873,19 @@ REASONING: [brief explanation of how you matched it]"""
 
         # Log successful match
         log_claude_api_usage(invoice_text, po_number, job_name, confidence_score, input_tokens, output_tokens, True)
+        note_po_claude_problem('')
 
         return (po_number, job_name, confidence_score)
 
     except anthropic.APIError as e:
         print(f"  ❌ Claude API error: {e}")
         log_claude_api_usage(invoice_text, None, None, 0, 0, 0, False)
+        note_po_claude_problem(e, 'matching vendor invoices to POs')
         return (None, None, 0)
     except Exception as e:
         print(f"  ❌ Error calling Claude API: {e}")
         log_claude_api_usage(invoice_text, None, None, 0, 0, 0, False)
+        note_po_claude_problem(e, 'matching vendor invoices to POs')
         return (None, None, 0)
 
 

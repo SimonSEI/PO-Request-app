@@ -3010,8 +3010,8 @@ class PumpsTest(unittest.TestCase):
                  'client': {'name': 'Barrington Cove'}, 'lineItems': {'nodes': [{'description': 'Pump Maintenance Complete'}]}},
             ], 'pageInfo': {'hasNextPage': False}}}
             conn = P._conn()
-            self.assertEqual(P.scan_scada_invoices(conn), {'added': 1, 'recorded': 2})
-            self.assertEqual(P.scan_scada_invoices(conn), {'added': 0, 'recorded': 0})  # once only
+            self.assertEqual({k: v for k, v in P.scan_scada_invoices(conn).items() if v}, {'added': 1, 'recorded': 2})
+            self.assertEqual({k: v for k, v in P.scan_scada_invoices(conn).items() if v and k != 'status'}, {})  # once only
             conn.commit(); conn.close()
             rows = {r['client']: r for r in self.c.get('/pumps/api/scada').get_json()['scada']}
             self.assertEqual(rows['LELY']['years']['2027'], '40001')
@@ -4410,6 +4410,107 @@ class PumpsTest(unittest.TestCase):
             conn.close()
         finally:
             P.PUMP_MANAGER_WEBHOOK_KEY, P.PUMP_APP_REPLY_TOKEN = saved
+
+    def test_scada_scan_counts_every_outcome_and_never_stops_the_sync(self):
+        """Nov 24 2026: after #774 record_scada_invoice() also returns 'status' / 'moved', and the scan's
+        done[what] += 1 raised KeyError 'status' - every Jobber sync failed. An invoice already on the tab with an empty
+        year_status is counted as 'status' (its status saved); one bad record is logged and skipped."""
+        conn = P._conn()
+        try:
+            sid = conn.execute("INSERT INTO pump_scada_accounts (client, renewal_date, years, jobber_names, updated_at, "
+                               "year_status) VALUES ('Scanstatus Lakes', '2026-03-01', ?, 'Scanstatus Lakes', '2026-01-01', '')",
+                               (json.dumps({'2026': '33555'}),)).lastrowid
+            conn.commit()
+            nodes = [{'invoiceNumber': '33555', 'invoiceStatus': 'awaiting_payment', 'issuedDate': '2026-02-20',
+                      'createdAt': '2026-02-20', 'client': {'name': 'Scanstatus Lakes'}, 'amounts': {'total': 600},
+                      'lineItems': {'nodes': [{'name': 'SCADA', 'description': 'Annual SCADA subscription renewal'}]}},
+                     {'invoiceNumber': '99999', 'invoiceStatus': 'awaiting_payment', 'issuedDate': '2026-02-20',
+                      'client': {'name': 'Broken'}, 'lineItems': {'nodes': [{'name': 'SCADA', 'description': 'SCADA renewal'}]}}]
+            saved = (P.jobber_gql, P.record_scada_invoice)
+            real = P.record_scada_invoice
+            P.jobber_gql = lambda q, v=None: {'invoices': {'nodes': nodes, 'pageInfo': {'hasNextPage': False}}}
+
+            def rec(c, inv):
+                if inv['invoiceNumber'] == '99999':
+                    raise RuntimeError('a broken record')
+                return real(c, inv)
+            P.record_scada_invoice = rec
+            try:
+                done = P.scan_scada_invoices(conn)
+            finally:
+                P.jobber_gql, P.record_scada_invoice = saved
+            conn.commit()
+            self.assertEqual(done['status'], 1)
+            self.assertEqual(done['errors'], 1)
+            self.assertEqual(json.loads(conn.execute('SELECT year_status FROM pump_scada_accounts WHERE id=?', (sid,)).fetchone()[0]),
+                             {'2026': 'awaiting_payment'})
+            self.assertTrue(any('#99999' in e['message'] or '#99999' in e['record'] for e in P._state_get('jobber_sync_log') or []))
+        finally:
+            conn.execute("DELETE FROM pump_scada_accounts WHERE client='Scanstatus Lakes'")
+            conn.commit()
+            conn.close()
+            P._state_set('jobber_sync_log', [])
+
+    def test_failed_syncs_counted_in_a_row_for_the_banner(self):
+        """Nov 24 2026: the page said "Everything is working" while every sync failed. Failed syncs in a row are
+        counted (the Jobber row shows it; the banner warns from 2), and a good sync resets it."""
+        saved = (P._sync_jobber, P._state_get('jobber_sync'))
+        try:
+            P._state_set('jobber_sync', {'state': 'failed', 'errors': ['x'], 'fail_streak': 1})
+
+            def boom(full=False, actor='system'):
+                P._state_set('jobber_sync', {**(P._state_get('jobber_sync') or {}), 'state': 'running'})
+                raise KeyError('status')
+            P._sync_jobber = boom
+            with self.assertRaises(KeyError):
+                P.sync_jobber()
+            st = P._state_get('jobber_sync')
+            self.assertEqual((st['state'], st['fail_streak']), ('failed', 2))
+            page = self.c.get('/pumps').get_data(as_text=True)
+            self.assertIn('syncHealth', page)
+            self.assertIn('Last sync failed', page)
+        finally:
+            P._sync_jobber = saved[0]
+            P._state_set('jobber_sync', saved[1] or {})
+
+    def test_missed_approvals_get_their_todo_once(self):
+        """Nov 24 2026: quotes the sync marked approved while every sync failed never got on_quote_approved(). Their
+        "Sign the approved quote" to-do is added once - nothing sent, Jobber not changed."""
+        conn = P._conn()
+        try:
+            P._state_set('approvals_caught_up_nov24', None)
+            cid = P.create_case(conn, {'title': 'Pump repair', 'client_name': 'Missed Approval Lakes', 'vendor': 'Wettech'}, 'test')
+            P._set_step(conn, cid, 'client_approved', at='2026-11-24', by='jobber sync')
+            conn.execute("UPDATE pump_cases SET updated_at='2026-11-24 15:00:00' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+        sent = []
+        saved = P.graph_send
+        P.graph_send = lambda *a, **k: sent.append(a)
+        try:
+            self.assertIn(cid, P.catch_up_missed_approvals())
+            self.assertEqual(P.catch_up_missed_approvals(), [], 'once only')
+        finally:
+            P.graph_send = saved
+        self.assertEqual(sent, [], 'nothing is sent')
+        conn = P._conn()
+        try:
+            self.assertTrue(conn.execute('SELECT 1 FROM pump_todos WHERE key=? AND done_at IS NULL', (f'sign-quote:{cid}',)).fetchone())
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def test_po_claude_failure_on_the_banner(self):
+        """Nov 24 2026: the PO@ vendor-invoice checker's Claude failures ("credit balance is too low") fell back to
+        regex silently - now on the Pumps page until Claude works again."""
+        A.note_po_claude_problem('Your credit balance is too low to access the Anthropic API', 'reading vendor invoices')
+        page = self.c.get('/pumps').get_data(as_text=True)
+        self.assertIn('PO@ vendor-invoice checker', page)
+        self.assertIn('credit balance is too low', page)
+        A.note_po_claude_problem('')
+        self.assertNotIn('PO@ vendor-invoice checker', self.c.get('/pumps').get_data(as_text=True))
 
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits

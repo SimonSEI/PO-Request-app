@@ -4397,7 +4397,8 @@ def sync_jobber(full=False, actor='system'):
     except Exception as e:
         st = _state_get('jobber_sync') or {}
         if st.get('state') == 'running':
-            st.update(state='failed', finished_at=_now_text(), errors=(st.get('errors') or []) + [str(e)])
+            st.update(state='failed', finished_at=_now_text(), errors=(st.get('errors') or []) + [str(e)],
+                      fail_streak=(st.get('fail_streak') or 0) + 1)
             _state_set('jobber_sync', st)
             _log_sync_errors([f'sync stopped: {e}'])
         raise
@@ -4406,19 +4407,19 @@ def sync_jobber(full=False, actor='system'):
 SYNC_LOG_KEEP = 30
 
 
-def _log_sync_errors(errors, at=None):
+def _log_sync_errors(errors, at=None, conn=None):
     """Each sync error kept with the record it was about and when (Nov 2026: "1 errors" said nothing)."""
     if not errors:
         return
     at = at or _now_text()
-    log = _state_get('jobber_sync_log') or []
+    log = _state_get('jobber_sync_log', conn=conn) or []
     for e in errors:
         text = str(e)
         rec, _, msg = text.partition(': ')
         if not msg:
             rec, msg = '', text
         log.append({'at': at, 'record': rec[:120], 'message': msg[:500]})
-    _state_set('jobber_sync_log', log[-SYNC_LOG_KEEP:])
+    _state_set('jobber_sync_log', log[-SYNC_LOG_KEEP:], conn=conn)
 
 
 def jobber_sync_state():
@@ -4429,7 +4430,8 @@ def jobber_sync_state():
         with _FileLock('jobber_sync', blocking=False) as got:
             if got:
                 st.update(state='interrupted', finished_at=_now_text(),
-                          errors=(st.get('errors') or []) + ['The sync stopped part way (the app restarted) - run it again.'])
+                          errors=(st.get('errors') or []) + ['The sync stopped part way (the app restarted) - run it again.'],
+                          fail_streak=(st.get('fail_streak') or 0) + 1)
                 _state_set('jobber_sync', st)
                 _log_sync_errors(['sync: stopped part way - the app restarted'])
     return {**st, 'log': list(reversed(_state_get('jobber_sync_log') or []))}
@@ -4572,7 +4574,9 @@ def _sync_jobber(full=False, actor='system'):
     with _FileLock('jobber_sync', blocking=False) as got:
         if not got:
             return {'skipped': 'a Jobber sync is already running'}
-        status = {'state': 'running', 'started_at': _now_text(), 'counts': {}, 'errors': []}
+        prev = _state_get('jobber_sync') or {}
+        status = {'state': 'running', 'started_at': _now_text(), 'counts': {}, 'errors': [],
+                  'fail_streak': prev.get('fail_streak', 0) if prev.get('state') in ('failed', 'interrupted', 'running') else 0}
         t0 = time.time()
         _state_set('jobber_sync', status)
         seen = {}
@@ -4691,7 +4695,8 @@ def _sync_jobber(full=False, actor='system'):
             try:
                 status['scada_invoices'] = scan_scada_invoices(conn)
                 conn.commit()
-            except JobberError as e:
+                print(f"  Pumps Jobber sync: SCADA invoices {status['scada_invoices']}")
+            except Exception as e:
                 status['errors'].append(f'SCADA invoices: {e}')
         finally:
             conn.close()
@@ -4700,8 +4705,12 @@ def _sync_jobber(full=False, actor='system'):
                 on_quote_approved(cid)
             except Exception as e:
                 status['errors'].append(f'Approved quote (item {cid}): {e}')
+        try:
+            status['approvals_caught_up'] = catch_up_missed_approvals()
+        except Exception as e:
+            status['errors'].append(f'Missed approvals: {e}')
         status.update(state='done', finished_at=_now_text(), items=len(seen), linked=linked,
-                      seconds=round(time.time() - t0))
+                      seconds=round(time.time() - t0), fail_streak=0)
         for e in status['errors'][:20]:
             print(f'  ⚠ Pumps Jobber sync: {e}')
         _state_set('jobber_sync', status)
@@ -14536,7 +14545,7 @@ def scan_scada_invoices(conn, days=430):
     fields = (f'id invoiceNumber invoiceStatus issuedDate createdAt jobberWebUri amounts {{ total }} '
               f'client {{ id name }} {lines}')
     filt = '(first: 50, after: $after, filter: { issuedDate: { after: $since } })'
-    done = {'added': 0, 'recorded': 0}
+    done = {'added': 0, 'recorded': 0, 'status': 0, 'moved': 0, 'errors': 0}
     cursor, pages = None, 0
     while pages < 30:
         q = (f'query($after: String, $since: ISO8601DateTime) {{ invoices{filt} {{ nodes {{ {fields} }} '
@@ -14552,9 +14561,16 @@ def scan_scada_invoices(conn, days=430):
         page = (data or {}).get('invoices') or {}
         nodes = page.get('nodes') or []
         for inv in nodes:
-            what = record_scada_invoice(conn, inv)
+            # One record that fails is logged and skipped - never the whole sync (Nov 24 2026: a KeyError here failed
+            # every sync for hours).
+            try:
+                what = record_scada_invoice(conn, inv)
+            except Exception as e:
+                done['errors'] += 1
+                _log_sync_errors([f"SCADA invoice #{inv.get('invoiceNumber') or '?'}: {e}"], conn=conn)
+                continue
             if what:
-                done[what] += 1
+                done[what] = done.get(what, 0) + 1
         pages += 1
         info = page.get('pageInfo') or {}
         if not info.get('hasNextPage') or not nodes:
@@ -15271,6 +15287,37 @@ def stamp_approved(pdf_bytes, who, when):
 
 def _approved_name(file_name):
     return os.path.splitext(file_name or 'quote')[0] + ' - APPROVED.pdf'
+
+
+def catch_up_missed_approvals(since='2026-11-24', actor='Jobber sync'):
+    """Once: jobs the Jobber sync marked approved while every sync failed after "Approved" was ticked (Nov 24
+    2026, a KeyError in the SCADA scan) never got their follow-up. Each open one without a "Sign the approved quote"
+    to-do gets it now (with its email draft) - nothing is sent and Jobber isn't changed; "Convert the quote to a
+    job" comes from the sync's own check. Returns the jobs, also printed to the log."""
+    if _state_get('approvals_caught_up_nov24'):
+        return []
+    conn = _conn()
+    done = []
+    try:
+        for r in conn.execute("SELECT * FROM pump_cases WHERE status='open' AND COALESCE(updated_at, '') >= ?", (since,)).fetchall():
+            st = (json.loads(r['steps'] or '{}').get('client_approved') or {})
+            if not st.get('at') or (st.get('by') or '').lower() != 'jobber sync' or st['at'] < since:
+                continue
+            if conn.execute('SELECT 1 FROM pump_todos WHERE key=?', (f"sign-quote:{r['id']}",)).fetchone():
+                continue
+            doc = _approved_quote_doc(conn, r['id'])
+            if doc and (doc.get('jobber') or {}).get('signed_sent_at'):
+                continue
+            add_sign_todo(conn, dict(r), doc)
+            _event(conn, actor, 'approval caught up', 'Approved while the Jobber sync was failing - its "Sign the '
+                                                      'approved quote" to-do is added now', case_id=r['id'])
+            done.append(r['id'])
+        conn.commit()
+    finally:
+        conn.close()
+    _state_set('approvals_caught_up_nov24', {'at': _now_text(), 'cases': done})
+    print(f'  Pumps: approvals caught up after the failed syncs: {done or "none"}')
+    return done
 
 
 def on_quote_approved(case_id, actor='Jobber sync'):
@@ -18991,6 +19038,7 @@ def page():
                                   jobber=jobber_status(),
                                   claude=USE_CLAUDE,
                                   claude_problem=(_state_get('claude_problem') or {}).get('problem', ''),
+                                  po_claude=(_state_get('po_claude_problem') or {}),
                                   email=bool(CFG.get('email_enabled')),
                                   openclaw=bool(OPENCLAW_API_KEY),
                                   markup=MARKUP_PCT,

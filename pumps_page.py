@@ -363,9 +363,10 @@ details.fold[open] > summary h4::before { content: '▾ '; }
 <div class="strip">
   <div>PO@ mailbox: {% if email %}<b class="ok">connected</b> · <span id="scanInfo">…</span>
     <button class="btn s" id="scanBtn" onclick="scanNow()">Scan now</button> <button class="btn s" onclick="showRecentFiles()" title="What happened to each emailed file">Recent files</button>{% else %}<b class="warn">not configured</b> (upload documents by hand){% endif %}</div>
-  <div>Jobber: <span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}{% if jobber.broken %}<b class="bad" title="{{ jobber.broken }}">disconnected - Jobber stopped accepting the app's sign-in</b> {% endif %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">{{ 'Reconnect' if jobber.broken else 'Connect' }} Jobber</a>{% else %}<b class="warn">not set up</b>{% endif %}</span></div>
+  <div>Jobber: <span id="syncHealth"></span><span id="jobberInfo">{% if jobber.connected %}<b class="ok">connected</b>{% elif jobber.can_connect %}{% if jobber.broken %}<b class="bad" title="{{ jobber.broken }}">disconnected - Jobber stopped accepting the app's sign-in</b> {% endif %}<a class="btn s p" href="{{ url_for('pumps.jobber_connect') }}">{{ 'Reconnect' if jobber.broken else 'Connect' }} Jobber</a>{% else %}<b class="warn">not set up</b>{% endif %}</span></div>
   <div>Reading documents: {% if claude and claude_problem %}<b class="bad">Claude is not working</b> ({{ claude_problem }}) - new documents wait in the To do list and are read again automatically once it works{% elif claude %}<b class="ok">Claude</b>{% else %}<b class="ok">built-in reader</b> (Wettech and Gulfshore quotes, invoices and reports; anything it can't read waits in the To do list){% endif %}</div>
   <div id="syncErrors" class="hide"></div>
+  {% if po_claude.problem %}<div>PO@ vendor-invoice checker: <b class="bad">Claude failed{{ ' ' + po_claude.where if po_claude.where }} - reading with simple rules ({{ po_claude.problem }}, {{ po_claude.at }})</b></div>{% endif %}
   <div>Matching bills to jobs: {% if grok %}<b class="ok">Grok on</b> (when no PO, quote # or email ties a vendor bill to a job){% else %}<span class="note">by PO, quote # and client only - set XAI_API_KEY to let Grok match the rest</span>{% endif %}</div>
   <div>Daily email: <span id="digestInfo">to {{ digest_to }} at {{ digest_hour }}am on weekdays</span>
     <button class="btn s" onclick="previewDigest()">Preview</button></div>
@@ -2808,6 +2809,12 @@ async function loadJobs(){
 function syncInfo(s){
   document.getElementById('syncInfo').innerHTML = !JOBBER_OK ? '<b class="warn">Jobber is not connected.</b>' :
     (s.state === 'running' ? `Syncing Jobber… (started ${esc(s.started_at || '')})` : (s.state === 'failed' || s.state === 'interrupted' ? `<b class="bad">Last sync did not finish</b> - it runs again on its own · ` : '') + (s.finished_at ? `Synced with Jobber ${esc(s.finished_at.slice(11, 16))}` + (s.seconds != null && s.state === 'done' ? ` (took ${s.seconds < 90 ? s.seconds + ' sec' : Math.round(s.seconds / 60) + ' min'})` : '') : 'Not synced yet.') + (s.every_min ? ` · syncs on its own every ${s.every_min} min` : '')) + ((s.errors || []).length ? ` · <a href="#" class="bad" onclick="event.preventDefault();showSyncErrors()" title="${esc(s.errors.join('\n'))}">${s.errors.length} error${s.errors.length === 1 ? '' : 's'} - see details</a>` : '');
+  // The Jobber row says a failed sync (Nov 2026: "Everything is working" while every sync failed); the banner turns
+  // to a warning after 2 in a row.
+  const sh = document.getElementById('syncHealth');
+  if (sh) { const failed = s.state === 'failed' || s.state === 'interrupted';
+    sh.innerHTML = failed ? `<b class="bad syncfail" data-streak="${s.fail_streak || 1}">Last sync failed: ${esc(((s.errors || []).slice(-1)[0] || '').slice(0, 160))}${(s.fail_streak || 0) >= 2 ? ` (${s.fail_streak} in a row)` : ''}</b> · ` : '';
+    if (typeof statusSummary === 'function') statusSummary(); }
   // Under "details": the last sync's errors and a short log (record, message, time) - Nov 2026.
   const se = document.getElementById('syncErrors');
   if (se) { const log = s.log || [];
@@ -3128,8 +3135,11 @@ function statusSummary(){
   const box = document.getElementById('statusBox'); if (!box) return;
   const items = [...box.querySelectorAll('.strip>div')];
   const name = d => (d.childNodes[0] && d.childNodes[0].textContent || '').replace(/:\s*$/, '').trim();
-  const bad = items.filter(d => d.querySelector('.bad')), warn = items.filter(d => !d.querySelector('.bad') && d.querySelector('.warn'));
-  const say = ds => ds.map(d => name(d) + ': ' + ((d.querySelector('.bad, .warn') || {}).textContent || '').trim()).join(' · ');
+  // A failed Jobber sync shows red on its row; the banner warns only once 2 have failed in a row.
+  const isBad = d => [...d.querySelectorAll('.bad')].some(x => !x.classList.contains('syncfail'));
+  const isWarn = d => d.querySelector('.warn') || [...d.querySelectorAll('.syncfail')].some(x => +x.dataset.streak >= 2);
+  const bad = items.filter(isBad), warn = items.filter(d => !isBad(d) && isWarn(d));
+  const say = ds => ds.map(d => name(d) + ': ' + ((d.querySelector('.bad:not(.syncfail), .warn, .syncfail') || {}).textContent || '').trim()).join(' · ');
   box.className = 'status ' + (bad.length ? 'bad' : warn.length ? 'warn' : 'ok');
   document.getElementById('statusSum').innerHTML = '<span class="sdot"></span> ' + esc(bad.length ? say(bad) : warn.length ? say(warn) : 'Everything is working - mailbox, Jobber and the document reader')
     + ' <span class="note" style="font-weight:400">· details</span>'
