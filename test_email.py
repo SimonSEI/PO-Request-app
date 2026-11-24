@@ -30,7 +30,10 @@ def send_test_notification_email():
         return False
 
     try:
-        recipient_email = 'simon@stahlman-england.com'
+        recipient_email = os.environ.get('TEST_EMAIL_TO', '')
+        if not recipient_email:
+            print("❌ Error: set TEST_EMAIL_TO to the address the test email goes to")
+            return False
         invoice_number = 'TEST-12345'
         invoice_cost = 150.00
         email_sender = 'test@example.com'

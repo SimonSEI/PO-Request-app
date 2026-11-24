@@ -66,7 +66,7 @@ Set `GROK_API_KEY` on Railway and give the same key to Grok Bot. It uploads the 
    - **Check-in:** once, 7 days after the invoice date, on an invoice of **$10,000 or more** that isn't due yet: "I wanted to check in and ensure that you received the attached invoice…".
 
    Each opens with "Good morning,"/"Good afternoon," by the time it is sent, with the invoices and signature underneath. After the 2nd follow-up, invoices 61+ days late get the firmer emails below.
-6. **Follow-ups.** Due follow-ups are grouped into one email per install job and one per customer for service calls. They are sent from **simon@stahlman-england.com** (Settings → *Send from*; any mailbox in the Microsoft 365 tenant works). The tone gets firmer the later the invoice is:
+6. **Follow-ups.** Due follow-ups are grouped into one email per install job and one per customer for service calls. They are sent from the office mailbox set in `AR_FROM_EMAIL` (Settings → *Send from*; any mailbox in the Microsoft 365 tenant works). The tone gets firmer the later the invoice is:
 
    | Stage | Starts (days past due) | Repeats every |
    |---|---|---|
@@ -123,10 +123,10 @@ Everything else (Jobber, replies, retainage, lien deadlines) runs on its own eve
 
 | Variable | Needed for | What it does |
 |---|---|---|
-| `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET` | email | The Microsoft 365 app the PO app already uses. It needs **Mail.Send** and **Mail.Read** (application) for the sending mailbox. If the tenant limits the app to certain mailboxes (an application access policy), add simon@stahlman-england.com to it. |
+| `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET` | email | The Microsoft 365 app the PO app already uses. It needs **Mail.Send** and **Mail.Read** (application) for the sending mailbox. If the tenant limits the app to certain mailboxes (an application access policy), add the sending mailbox to it. |
 | Pumps' Jobber connection | Jobber | Connect Jobber on the Pumps page. Receivables reads invoices, clients and jobs through it. |
 | `ANTHROPIC_API_KEY` | optional | Lets Claude read replies. Without it, simple rules do. |
-| `AR_FROM_EMAIL` | optional | Default "send from" address before Settings is saved (simon@stahlman-england.com). |
+| `AR_FROM_EMAIL` | email | Default "send from" address before Settings is saved (no default - set on Railway). |
 | `AR_USERS` | optional | e.g. `simon,beatriz`. Only these office usernames can open Receivables. |
 | `AR_AUTO_RUN` | optional | `false` stops the hourly cycle (*Run now* and uploads still work). |
 
