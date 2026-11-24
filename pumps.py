@@ -13666,6 +13666,19 @@ def _apply_renames_nov26(c, now):
                 c.execute(f'UPDATE OR IGNORE {table} SET {col}=? WHERE {col}=?', (new, old))
 
 
+def _close_wrong_scada_todos_nov26(c, now):
+    """Once (Nov 24 2026): the "SCADA renewal in Jobber" to-dos from the first version pointed at old converted
+    quotes for sites already invoiced - closed, their suggestions cleared. The new rules raise the right ones."""
+    c.execute("INSERT OR IGNORE INTO pump_state (key, value) VALUES ('scada_found_reset_nov26', ?)", (json.dumps(now),))
+    if c.rowcount != 1:
+        return
+    if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='pump_todos'").fetchone():
+        c.execute("UPDATE pump_todos SET done_at=?, done_by='Pumps (wrong suggestion)' WHERE key LIKE 'scada-found:%' "
+                  "AND done_at IS NULL", (_now_text(),))
+    c.execute("UPDATE pump_scada_accounts SET suggestion=''")
+    c.execute("DELETE FROM pump_state WHERE key='scada_find_day'")
+
+
 def _apply_billed_inside_nov26(c, now):
     """Once (Nov 24 2026, the office): Wild Blue's Gulfshore filter cleaning is billed inside a larger client
     invoice - no "not billed out yet" to-do for it."""
@@ -14198,6 +14211,7 @@ def init_account_tables(c):
     _apply_maint_vendors(c, now)
     _apply_former_nov26(c, now)
     _apply_billed_inside_nov26(c, now)
+    _close_wrong_scada_todos_nov26(c, now)
     _apply_renames_nov26(c, now)
     _apply_report_only(c, now)
     _undo_watercrest_mismatch(c, now)
@@ -14265,6 +14279,12 @@ def _scada_row(r, today):
         d['suggestion'] = json.loads(d.get('suggestion') or 'null')
     except ValueError:
         d['renewal_refs'], d['suggestion'] = {}, None
+    seen = {}
+    for y, v in sorted(d['years'].items()):
+        v = str(v).strip().lstrip('#')
+        if re.fullmatch(r'\d{4,7}', v):
+            seen.setdefault(v, []).append(y)
+    d['duplicates'] = {n: ys for n, ys in seen.items() if len(ys) > 1}   # flagged on the row (Nov 2026)
     d['client_name'], d['site'] = d['client'], ''
     if not d['active']:
         d['state'] = 'inactive'
@@ -14424,17 +14444,9 @@ def record_scada_invoice(conn, inv):
         if not hits:
             continue
         if len(hits) > 1:
-            # The same invoice in two years (CH Realty #37209 under 2025 and 2026, Nov 2026): it's the year it counts
-            # for - or the latest - only.
-            keep = year if (row is not None and r['id'] == row['id'] and year in hits) else hits[-1]
-            for k in hits:
-                if k != keep:
-                    ys.pop(k)
-            conn.execute('UPDATE pump_scada_accounts SET years=?, updated_by=?, updated_at=? WHERE id=?',
-                         (json.dumps(ys), 'jobber sync', now, r['id']))
-            _event(conn, 'jobber sync', 'SCADA renewal year', f"{r['client']}: invoice #{number} kept under {keep} "
-                                                              f"only (it was under {', '.join(hits)})")
-            hits = [keep]
+            # The same invoice in two years (CH Realty #37209 under 2025 and 2026): flagged for a person to fix
+            # (the row and a to-do) - not moved by the sync (Nov 2026).
+            return None
         y = hits[0]
         # Already on the tab: keep its status current (Awaiting payment / paid), and a renewal filed under the
         # year before - invoiced a few weeks early - goes to its own year when that one is empty (Nov 2026).
@@ -14649,14 +14661,17 @@ def h_scada_update(actor, sid):
                          (*vals, actor, _now_text(), sid))
             _event(conn, actor, 'SCADA renewed', f"{row['client']} {year}: " +
                    ', '.join(f'{k} #{v}' for k, v in (('quote', quote), ('job', job), ('invoice', value)) if v))
-            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key LIKE ? AND done_at IS NULL",
-                         (_now_text(), actor, f'scada-found:{sid}:%'))
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE (key LIKE ? OR key LIKE ?) AND done_at IS NULL",
+                         (_now_text(), actor, f'scada-found:{sid}:%', f'scada-renewal:{sid}:%'))
             conn.commit()
             return {'scada': scada_rows(conn)}
         if d.get('action') == 'dismiss_suggestion':
+            sug = json.loads(row['suggestion'] or 'null') or {}
+            if sug.get('number'):
+                scada_dismiss(sid, sug['number'])
             conn.execute("UPDATE pump_scada_accounts SET suggestion='' WHERE id=?", (sid,))
-            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE key LIKE ? AND done_at IS NULL",
-                         (_now_text(), actor, f'scada-found:{sid}:%'))
+            conn.execute("UPDATE pump_todos SET done_at=?, done_by=? WHERE (key LIKE ? OR key LIKE ?) AND done_at IS NULL",
+                         (_now_text(), actor, f'scada-found:{sid}:%', f'scada-renewal:{sid}:%'))
             _event(conn, actor, 'SCADA suggestion dismissed', row['client'])
             conn.commit()
             return {'scada': scada_rows(conn)}
@@ -16419,38 +16434,105 @@ _SCADA_RANK = {'approved': 0, 'converted': 0, 'active': 1, 'requires_invoicing':
                'late': 1, 'awaiting_response': 2, 'changes_requested': 2, 'draft': 3}
 
 
+SCADA_SUGGEST_DAYS = 60   # a renewal more than this far off isn't looked for - unless something new is in Jobber
+
+
+def _scada_recorded(r):
+    """Every invoice, quote and job # already on a SCADA row, any year."""
+    nums = {str(v).strip().lstrip('#') for v in (r.get('years') or {}).values() if str(v).strip()}
+    for ref in (r.get('renewal_refs') or {}).values():
+        nums |= {str(v).strip().lstrip('#') for k, v in (ref or {}).items() if k in ('quote', 'job', 'invoice') and v}
+    q = r.get('quote')
+    q = json.loads(q or '{}') if isinstance(q, str) else (q or {})
+    if q.get('number'):
+        nums.add(str(q['number']))
+    return {n for n in nums if n}
+
+
+def _scada_last_invoiced(conn, r):
+    """When the site's latest recorded renewal was invoiced: its invoice's date from the sync, else ~60 days before
+    that year's renewal date. '' when nothing is recorded."""
+    filled = sorted(int(y) for y, v in (r.get('years') or {}).items() if y.isdigit() and re.fullmatch(r'#?\d{4,7}', str(v).strip()))
+    if not filled:
+        return ''
+    nums = [str(r['years'][str(y)]).strip().lstrip('#') for y in filled]
+    dates = [(x[0] or '')[:10] for x in conn.execute(
+        f"SELECT COALESCE(NULLIF(start_at, ''), created_at) FROM pump_jobber_items WHERE kind='invoice' AND number IN "
+        f"({','.join('?' * len(nums))})", nums)]
+    dates = [d for d in dates if d]
+    if dates:
+        return max(dates)
+    try:
+        base = datetime.strptime((r.get('renewal_date') or '')[:10], '%Y-%m-%d').date()
+        return (_anniversary(base, filled[-1]) - timedelta(days=SCADA_SUGGEST_DAYS)).isoformat()
+    except ValueError:
+        return f'{filled[-1]}-01-01'
+
+
+def _scada_dismissed():
+    return set(_state_get('scada_dismissed') or [])
+
+
+def scada_dismiss(sid, number):
+    """"Not it" (or the to-do ticked): this site + this Jobber # never suggested again."""
+    d = _scada_dismissed() | {f'{sid}:{number}'}
+    _state_set('scada_dismissed', sorted(d))
+
+
 def scada_find_renewals(force=False):
-    """Once a day: for each SCADA site whose coming renewal isn't invoiced yet, an approved Jobber quote or a job
-    whose title or lines say SCADA, at the site's client - suggested on the row and in To do, to confirm with one
-    click (Corsa, Nov 2026: approved #8909 was missed - the row pointed at a stale draft #9203 under another
-    client). Nothing is recorded until someone (or Pump Manager) confirms it."""
+    """Once a day, per SCADA site (Nov 2026, after 14 wrong to-dos pointing at old converted quotes for sites already
+    invoiced for 2026):
+    - an approved/converted quote or a job whose title or lines say SCADA, at the site's client, is suggested only
+      when it was made AFTER the site's latest recorded renewal invoice, its # isn't on the row already, and - for a
+      converted quote or a job - none of its invoices is on the row (quote -> job -> invoice through Jobber);
+    - a renewal more than 60 days off isn't looked into unless such a new, unrecorded quote/job exists;
+    - "Not it" (or the to-do ticked) is remembered per site and #;
+    - a SCADA renewal invoice of $0 (FGCU PGA #37203 from #9242/job #14684): "SCADA renewal invoice is $0 - confirm
+      or bill";
+    - the same invoice # under two years (CH Realty #37209, ClubCare #19732): a to-do to fix it.
+    Nothing is recorded until someone (or Pump Manager) confirms it."""
     day = _today().isoformat()
     if not force and (_state_get('scada_find_day') or '') == day:
         return []
     _state_set('scada_find_day', day)
-    if not jobber_status()['connected']:
-        return []
     conn = _conn()
     try:
-        rows = [r for r in scada_rows(conn) if r['active'] and not r.get('complimentary')]
+        rows = [r for r in scada_rows(conn) if r['active']]
+        for r in rows:
+            for num, ys in (r.get('duplicates') or {}).items():
+                add_todo(conn, f"scada-dup:{r['id']}:{num}", f"SCADA: invoice #{num} is under {' and '.join(ys)} - {r['client']}",
+                         f"The same invoice can't be two years' renewal. Fix it on the SCADA tab: Renewed… with the right "
+                         f"year moves it there, or Edit the year columns.", {'scada_id': r['id'], 'tab': 'scada', 'label': 'SCADA'})
+        last = {r['id']: _scada_last_invoiced(conn, r) for r in rows}
+        zero_known = {}
+        for r in rows:
+            y = max((k for k, v in r['years'].items() if k.isdigit() and re.fullmatch(r'#?\d{4,7}', str(v).strip())), default='')
+            if y:
+                num = str(r['years'][y]).strip().lstrip('#')
+                it = conn.execute("SELECT total FROM pump_jobber_items WHERE kind='invoice' AND number=?", (num,)).fetchone()
+                if it and it['total'] is not None and float(it['total']) == 0:
+                    zero_known[(r['id'], num)] = r
+        conn.commit()
     finally:
         conn.close()
-    since = (_today() - timedelta(days=400)).isoformat()
-    found = []
-    for r in rows:
-        year = (r['next_due_on'] or '')[:4]
-        if not year or str(r['years'].get(year) or '').strip():
-            continue
+    if not jobber_status()['connected']:
+        return []
+    dismissed = _scada_dismissed()
+    found, zero = [], dict(zero_known)
+    for r in [x for x in rows if not x.get('complimentary')]:
+        recorded = _scada_recorded(r)
         names = [n.strip() for n in re.split(r'[;,\n]', r.get('jobber_names') or '') if n.strip()] + [r['client']]
         mine = lambda client: any(_same_account(n, client or '') or fuzzy_has(_core_name(n), client or '') for n in names)
-        cands = []
+        since = last[r['id']] or (_today() - timedelta(days=400)).isoformat()
+        due_soon = r.get('days_left') is not None and r['days_left'] <= SCADA_SUGGEST_DAYS
+        quotes, jobs = [], []
         for n in names:
             core = _core_name(n)
             if len(core) < 3:
                 continue
-            for kind, conn_name, num, st in (('quote', 'quotes', 'quoteNumber', 'quoteStatus'),
-                                             ('job', 'jobs', 'jobNumber', 'jobStatus')):
-                q = (f'query($q: String) {{ {conn_name}(first: 15, searchTerm: $q) {{ nodes {{ id {num} title {st} '
+            for kind, conn_name, numf, st in (('quote', 'quotes', 'quoteNumber', 'quoteStatus'),
+                                              ('job', 'jobs', 'jobNumber', 'jobStatus')):
+                q = (f'query($q: String) {{ {conn_name}(first: 15, searchTerm: $q) {{ nodes {{ id {numf} title {st} '
                      'createdAt jobberWebUri client { name } lineItems(first: 10) { nodes { name description } } } } }')
                 try:
                     data = jobber_gql(q, {'q': core})
@@ -16460,31 +16542,71 @@ def scada_find_renewals(force=False):
                     text = ' '.join([x.get('title') or ''] + [f"{li.get('name') or ''} {li.get('description') or ''}"
                                                               for li in (x.get('lineItems') or {}).get('nodes') or []])
                     status = (x.get(st) or '').lower()
-                    if not re.search(r'\bscada\b', text, re.I) or (x.get('createdAt') or '')[:10] < since or \
-                            status not in _SCADA_RANK or not mine((x.get('client') or {}).get('name')):
+                    if not re.search(r'\bscada\b', text, re.I) or not mine((x.get('client') or {}).get('name')):
                         continue
-                    cands.append({'kind': kind, 'id': x['id'], 'number': str(x.get(num) or ''), 'status': status,
-                                  'uri': x.get('jobberWebUri') or '', 'client': (x.get('client') or {}).get('name') or '',
-                                  'created': (x.get('createdAt') or '')[:10], 'year': year})
-        if not cands:
+                    c = {'kind': kind, 'id': x['id'], 'number': str(x.get(numf) or ''), 'status': status,
+                         'uri': x.get('jobberWebUri') or '', 'client': (x.get('client') or {}).get('name') or '',
+                         'created': (x.get('createdAt') or '')[:10], 'year': (r['next_due_on'] or '')[:4]}
+                    (quotes if kind == 'quote' else jobs).append(c)
+        # Each SCADA job made since the last recorded renewal: its invoices (and their totals) from Jobber.
+        for jb in jobs:
+            jb['invoices'] = []
+            if jb['created'] and jb['created'] >= (_today() - timedelta(days=400)).isoformat():
+                try:
+                    jb['invoices'] = job_invoices(jb['id'])
+                except JobberError:
+                    pass
+            for i in jb['invoices']:
+                if i['status'] not in ('voided', 'bad_debt', 'draft') and i['total'] is not None and float(i['total']) == 0:
+                    zero[(r['id'], i['number'])] = {**r, '_via': f"job #{jb['number']}"}
+        covered_jobs = [jb for jb in jobs if jb['number'] in recorded or any(i['number'] in recorded for i in jb['invoices'])]
+
+        def covered(c):
+            if c['number'] in recorded:
+                return True
+            if c['kind'] == 'job':
+                return c in covered_jobs
+            # A converted quote is covered when the client's SCADA job made from it (on or after the quote, within
+            # 60 days) is - its job or invoice # already on the row.
+            if c['status'] == 'converted':
+                d0 = c['created']
+                return any(d0 <= jb['created'] <= (date.fromisoformat(d0) + timedelta(days=60)).isoformat()
+                           for jb in covered_jobs if d0 and jb['created'])
+            return False
+        cands = [c for c in quotes + jobs if c['status'] in _SCADA_RANK and _SCADA_RANK[c['status']] <= 2
+                 and c['created'] > since and not covered(c) and f"{r['id']}:{c['number']}" not in dismissed]
+        if not cands or (not due_soon and not cands):
             continue
-        best = sorted(cands, key=lambda c: (_SCADA_RANK[c['status']], c['created'] and -int(c['created'].replace('-', ''))))[0]
+        best = sorted(cands, key=lambda c: (_SCADA_RANK[c['status']], -int(c['created'].replace('-', '') or 0)))[0]
         cur = r.get('renewal_quote') or {}
-        if cur.get('number') == best['number'] or _SCADA_RANK[best['status']] > 2 or \
-                (cur.get('number') and _SCADA_RANK.get(cur.get('status') or '', 9) <= _SCADA_RANK[best['status']]):
-            continue   # nothing better than what the row has
+        if cur.get('number') == best['number']:
+            continue
+        key = f"scada-renewal:{r['id']}:{best['number']}"
         conn = _conn()
         try:
+            if conn.execute('SELECT 1 FROM pump_todos WHERE key=?', (key,)).fetchone():
+                continue   # raised before - ticked or still open: not again
             conn.execute('UPDATE pump_scada_accounts SET suggestion=? WHERE id=?', (json.dumps(best), r['id']))
             what = f"Jobber {best['kind']} #{best['number']} ({best['status'].replace('_', ' ')}, {best['client']})"
-            add_todo(conn, f"scada-found:{r['id']}:{best['number']}", f"SCADA renewal in Jobber - {r['client']}: {what}",
-                     f"Its {year} renewal isn't invoiced here. {what} says SCADA - confirm it on the SCADA tab "
-                     f"(Use it) or dismiss it" + (f"; the row had #{cur.get('number')} ({cur.get('status')})" if cur.get('number') else '') + '.',
-                     {'scada_id': r['id'], 'uri': best['uri'], 'tab': 'scada', 'label': 'SCADA'})
+            add_todo(conn, key, f"SCADA renewal in Jobber - {r['client']}: {what}",
+                     f"New since the last renewal recorded here ({since or 'none'}) and not on the SCADA tab yet. "
+                     f"Confirm it there (Use it) or Not it.", {'scada_id': r['id'], 'uri': best['uri'], 'tab': 'scada', 'label': 'SCADA'})
             conn.commit()
         finally:
             conn.close()
         found.append((r['id'], best['number']))
+    conn = _conn()
+    try:
+        for (sid, num), r in zero.items():
+            if f'{sid}:{num}' in dismissed:
+                continue
+            add_todo(conn, f"scada-zero:{sid}:{num}", f"SCADA renewal invoice is $0 - confirm or bill: {r['client']} #{num}",
+                     f"Our SCADA renewal invoice #{num}{' (' + r['_via'] + ')' if r.get('_via') else ''} totals $0.00. "
+                     "If it's complimentary, tick this (and mark the site complimentary); else bill the renewal.",
+                     {'scada_id': sid, 'tab': 'scada', 'label': 'SCADA'})
+        conn.commit()
+    finally:
+        conn.close()
     return found
 
 

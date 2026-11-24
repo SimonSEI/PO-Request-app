@@ -4115,14 +4115,14 @@ class PumpsTest(unittest.TestCase):
             co = conn.execute(ins, ('Corsa Testsite', '2026-12-15', json.dumps({}), 'Corsa Testsite',
                                     json.dumps({'id': 'Q-9203', 'number': '9203', 'status': 'draft', 'year': '2026'}))).lastrowid
             conn.commit()
-            # The sync sees #37209 (issued Nov 2026 for the Nov 1 renewal): it's 2026's only.
+            # The same invoice under two years is flagged on the row (not moved by the sync - Nov 24 2026).
             inv = {'invoiceNumber': '37209', 'invoiceStatus': 'awaiting_payment', 'issuedDate': '2026-11-06',
                    'client': {'name': 'CH Realty Testsite'},
                    'lineItems': {'nodes': [{'name': 'SCADA', 'description': 'SCADA Renewal annual subscription'}]}}
-            P.record_scada_invoice(conn, inv)
+            self.assertIsNone(P.record_scada_invoice(conn, inv))
             conn.commit()
-            self.assertEqual(json.loads(conn.execute('SELECT years FROM pump_scada_accounts WHERE id=?', (ch,)).fetchone()[0]),
-                             {'2026': '37209'})
+            row = next(x for x in P.scada_rows(conn) if x['id'] == ch)
+            self.assertEqual(row['duplicates'], {'37209': ['2025', '2026']})
         finally:
             conn.close()
         r = self.c.post(f'/pumps/api/scada/{ch}', json={'action': 'renewed', 'year': '2026', 'quote': '9300', 'job': '14800',
@@ -4156,7 +4156,7 @@ class PumpsTest(unittest.TestCase):
             sug = json.loads(conn.execute('SELECT suggestion FROM pump_scada_accounts WHERE id=?', (co,)).fetchone()[0])
             self.assertEqual((sug['kind'], sug['number'], sug['status']), ('quote', '8909', 'approved'))
             self.assertTrue(conn.execute("SELECT 1 FROM pump_todos WHERE key=? AND done_at IS NULL",
-                                         (f'scada-found:{co}:8909',)).fetchone())
+                                         (f'scada-renewal:{co}:8909',)).fetchone())
         finally:
             conn.close()
         r = self.c.post(f'/pumps/api/scada/{co}', json={'action': 'renewed', 'year': '2026', 'quote': '8909',
@@ -4166,9 +4166,88 @@ class PumpsTest(unittest.TestCase):
         self.assertEqual(row['renewal_quote']['number'], '8909')
         conn = P._conn()
         conn.execute('DELETE FROM pump_scada_accounts WHERE id IN (?, ?)', (ch, co))
-        conn.execute("DELETE FROM pump_todos WHERE key LIKE 'scada-found:%'")
+        conn.execute("DELETE FROM pump_todos WHERE key LIKE 'scada-%'")
         conn.commit()
         conn.close()
+
+    def test_scada_renewal_todos_only_for_new_unrecorded_work(self):
+        """Nov 24 2026: 14 wrong "SCADA renewal in Jobber" to-dos pointed at OLD converted quotes for sites already
+        invoiced for 2026 (Current, next due 2027). Only a quote/job newer than the last recorded renewal invoice, not
+        on the row and not converted into an invoice that is, makes one; "Not it" is remembered; a $0 renewal invoice
+        (FGCU PGA #37203 from #9242 / job #14684) makes "SCADA renewal invoice is $0"; a duplicate is flagged."""
+        conn = P._conn()
+        try:
+            ins = ("INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years, jobber_names, "
+                   "notes, updated_by, updated_at) VALUES (?, ?, 'Annual Subscription - SCADA', '$600.00', 'Wettech', ?, ?, '', "
+                   "'test', '2026-01-01')")
+            # Invoiced for 2026 already (Feb 2026); next due Feb 2027.
+            cur = conn.execute(ins, ('Oldquote Lakes', '2026-02-15', json.dumps({'2025': '28001', '2026': '33001'}), 'Oldquote Lakes')).lastrowid
+            conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, total, created_at, start_at, "
+                         "category, ignored) VALUES ('I-OQ', 'invoice', '33001', 'SCADA renewal', 'paid', 600, '2026-02-10', "
+                         "'2026-02-10', 'scada', 0)")
+            # FGCU PGA-like: converted quote #9242 -> job #14684 -> invoice #37203 at $0; due Dec 1.
+            pga = conn.execute(ins, ('Zero Testsite', '2025-12-01', json.dumps({'2025': '32130'}), 'Zero Testsite')).lastrowid
+            # Duplicate across years (ClubCare #19732 under 2023 and 2024).
+            dup = conn.execute(ins, ('Dup Testsite', '2027-06-01', json.dumps({'2023': '19732', '2024': '19732', '2025': '27166',
+                                                                               '2026': '32861'}), 'Dup Testsite')).lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+        node = lambda i, num, st, created, client, title='SCADA renewal': {
+            'id': i, 'quoteNumber': num, 'jobNumber': num, 'title': title, 'quoteStatus': st, 'jobStatus': st,
+            'createdAt': created + 'T10:00:00Z', 'jobberWebUri': '', 'client': {'name': client},
+            'lineItems': {'nodes': [{'name': 'SCADA', 'description': 'Annual cellular subscription for SCADA'}]}}
+
+        def gql(q, v=None):
+            who = (v or {}).get('q') or ''
+            if 'quotes(' in q:
+                return {'quotes': {'nodes': {
+                    'Oldquote Lakes': [node('Q-OLD', '8700', 'converted', '2025-12-20', 'Oldquote Lakes')],
+                    'Zero Testsite': [node('Q-9242', '9242', 'converted', '2026-11-02', 'Zero Testsite')]}.get(who, [])}}
+            return {'jobs': {'nodes': {'Zero Testsite': [node('J-14684', '14684', 'requires_invoicing', '2026-11-04',
+                                                              'Zero Testsite')]}.get(who, [])}}
+        saved = (P.jobber_status, P.jobber_gql, P.job_invoices, P._today)
+        P.jobber_status = lambda: {'connected': True}
+        P.jobber_gql = gql
+        P.job_invoices = lambda jid: [{'id': 'I-37203', 'number': '37203', 'status': 'awaiting_payment', 'subject': 'SCADA',
+                                       'date': '2026-11-05', 'uri': '', 'total': 0.0, 'client': ''}] if jid == 'J-14684' else []
+        P._today = lambda: date(2026, 11, 24)
+        try:
+            found = P.scada_find_renewals(force=True)
+            self.assertNotIn(cur, [sid for sid, _ in found], 'an old converted quote for a site invoiced for 2026: nothing')
+            conn = P._conn()
+            try:
+                keys = {r[0] for r in conn.execute("SELECT key FROM pump_todos WHERE key LIKE 'scada-%' AND done_at IS NULL")}
+            finally:
+                conn.close()
+            self.assertFalse([k for k in keys if k.startswith(f'scada-renewal:{cur}:')])
+            self.assertIn(f'scada-zero:{pga}:37203', keys, 'a $0 renewal invoice')
+            self.assertIn(f'scada-dup:{dup}:19732', keys, 'a duplicate across years')
+            # #9242 is new and its job's invoice isn't on the row: suggested once; "Not it" is remembered.
+            self.assertIn((pga, '9242'), found)
+            self.c.post(f'/pumps/api/scada/{pga}', json={'action': 'dismiss_suggestion'})
+            conn = P._conn()
+            conn.execute("DELETE FROM pump_todos WHERE key=?", (f'scada-renewal:{pga}:9242',))   # even if the to-do went
+            conn.commit()
+            conn.close()
+            self.assertNotIn((pga, '9242'), P.scada_find_renewals(force=True), 'Not it is remembered')
+            # Once its invoice is on the row, the converted quote is covered.
+            P._state_set('scada_dismissed', [])
+            conn = P._conn()
+            conn.execute("UPDATE pump_scada_accounts SET years=? WHERE id=?", (json.dumps({'2025': '32130', '2026': '37203'}), pga))
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'scada-renewal:%'")
+            conn.commit()
+            conn.close()
+            self.assertNotIn((pga, '9242'), P.scada_find_renewals(force=True))
+        finally:
+            P.jobber_status, P.jobber_gql, P.job_invoices, P._today = saved
+            conn = P._conn()
+            conn.execute('DELETE FROM pump_scada_accounts WHERE id IN (?, ?, ?)', (cur, pga, dup))
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id='I-OQ'")
+            conn.execute("DELETE FROM pump_todos WHERE key LIKE 'scada-%'")
+            conn.commit()
+            conn.close()
+            P._state_set('scada_dismissed', [])
 
     def test_gulfshore_billed_inside_and_month_billed_on_the_recurring_job(self):
         """Nov 24 2026 (5): Wild Blue's Gulfshore bill is billed inside a larger invoice - no "not billed out" to-do;
