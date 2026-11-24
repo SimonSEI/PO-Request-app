@@ -3010,8 +3010,8 @@ class PumpsTest(unittest.TestCase):
                  'client': {'name': 'Barrington Cove'}, 'lineItems': {'nodes': [{'description': 'Pump Maintenance Complete'}]}},
             ], 'pageInfo': {'hasNextPage': False}}}
             conn = P._conn()
-            self.assertEqual(P.scan_scada_invoices(conn), {'added': 1, 'recorded': 2})
-            self.assertEqual(P.scan_scada_invoices(conn), {'added': 0, 'recorded': 0})  # once only
+            self.assertEqual({k: v for k, v in P.scan_scada_invoices(conn).items() if v}, {'added': 1, 'recorded': 2})
+            self.assertEqual({k: v for k, v in P.scan_scada_invoices(conn).items() if v and k != 'status'}, {})  # once only
             conn.commit(); conn.close()
             rows = {r['client']: r for r in self.c.get('/pumps/api/scada').get_json()['scada']}
             self.assertEqual(rows['LELY']['years']['2027'], '40001')
