@@ -2040,6 +2040,12 @@ async function findClients(){
   if (inv.client_id && !inv.job) invForClient(inv.client_id);
 }
 function pickClient(el, id){ inv.client_id = id; document.querySelectorAll('#cands .cand').forEach(c => { c.classList.remove('on'); c.querySelector('input').checked = false; }); el.classList.add('on'); el.querySelector('input').checked = true; if (inv.mode === 'quote') quoteProps(); else invForClient(id); }
+// The SCADA renewal's invoice is already a draft in Jobber (Corsa #37401, Nov 2026): open it, or link it to the bill.
+function existingDraft(j){
+  const d = j.existing_draft || {}, cid = (inv.doc || {}).case_id;
+  openModal('Draft #' + esc(d.number) + ' already exists', `<p>${esc(j.error)}</p>${d.total != null ? `<p class="note">${money(d.total)} · draft</p>` : ''}`,
+    `<button class="btn" onclick="closeModal()">Close</button>${d.uri ? `<a class="btn" target="_blank" rel="noopener" href="${esc(d.uri)}">Open #${esc(d.number)} in Jobber ↗</a>` : ''}${cid ? `<button class="btn p" onclick="closeModal();linkInvoicePick(${cid}, '${esc(d.number)}')">Link #${esc(d.number)} to this bill</button>` : ''}`);
+}
 // Jobber already has a quote/invoice for this client at this price.
 function confirmDuplicate(j){
   const d = j.possible_duplicate || {};
@@ -2062,6 +2068,7 @@ async function createInvoice(){
   let j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body: ibody});
   if (!j.success && j.possible_duplicate && confirmDuplicate(j)) j = await api('/docs/' + inv.doc.id + '/invoice', {method:'POST', body: {...ibody, force: true}});
   btn.disabled = false; btn.textContent = 'Create draft in Jobber';
+  if (!j.success && j.existing_draft) { existingDraft(j); return; }
   if (!j.success) { if (!j.possible_duplicate) toast(j.error, true); return; }
   closeModal();
   const v = j.invoice.visit || {};
@@ -2245,7 +2252,7 @@ async function loadScada(){
   document.getElementById('scadaTable').innerHTML = `<thead><tr><th>Status</th><th>Client</th><th>Renewal date</th><th>Product</th><th class="num">Amount</th><th>Our bill</th><th>Vendor</th><th>Renewal quote</th>${yr.map((y, i) => `<th>${y}${i === yr.length - 1 ? ` <span class="note" style="font-weight:400">· ${yearsBtn}</span>` : ''}</th>`).join('')}<th></th></tr></thead><tbody>` +
     (rows.map(s => `<tr>
       <td><span class="chip ${lab[s.state][0]}">${lab[s.state][1]}</span>${s.complimentary ? ' <span class="chip">complimentary</span>' : ''}${s.awaiting ? `<div class="note">${esc(s.awaiting.year)} renewal invoiced - #${esc(s.awaiting.number)}${s.awaiting.status === 'past_due' ? ' (past due)' : ''}</div>` : ''}${s.days_left != null && !['current', 'inactive', 'awaiting_payment'].includes(s.state) ? `<div class="note">${s.days_left < 0 ? -s.days_left + ' days late' : 'in ' + s.days_left + ' days'}</div>` : ''}</td>
-      <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}${Object.entries(s.duplicates || {}).map(([n, ys]) => `<div class="note bad">⚠ #${esc(n)} is under ${esc(ys.join(' and '))} - one invoice, one year: fix it (Renewed… or Edit)</div>`).join('')}</td>
+      <td><b>${esc(s.client)}</b>${s.notes ? `<div class="note">${esc(s.notes)}</div>` : ''}${Object.entries(s.duplicates || {}).map(([n, ys]) => `<div class="note bad">⚠ #${esc(n)} is under ${esc(ys.join(' and '))} - one invoice, one year: fix it (Renewed… or Edit)</div>`).join('')}${s.client_mismatch ? `<div class="note bad">⚠ Quote #${esc(s.client_mismatch.quote)} is under ${esc(s.client_mismatch.quote_client)}, but ${esc(s.client_mismatch.year)} is invoiced (#${esc(s.client_mismatch.invoice)}) under ${esc(s.client_mismatch.invoice_client)} - point the row at the right quote so it isn't billed twice</div>` : ''}</td>
       <td style="white-space:nowrap">${esc(s.next_due_on)}</td><td class="note">${esc(s.product)}</td>
       <td class="num">${money(s.vendor_cost)}</td><td>${esc(s.our_bill)}</td><td>${esc(s.vendor)}</td>
       <td style="white-space:nowrap">${quoteCell(s)}${(() => { const r = (s.renewal_refs || {})[(s.next_due_on || '').slice(0, 4)] || {}; return r.job ? `<div class="note">job #${esc(r.job)}</div>` : ''; })()}${s.suggestion ? `<div class="note" style="white-space:normal"><b>Found in Jobber:</b> ${s.suggestion.uri ? `<a target="_blank" rel="noopener" href="${esc(s.suggestion.uri)}">${esc(s.suggestion.kind)} #${esc(s.suggestion.number)} ↗</a>` : esc(s.suggestion.kind) + ' #' + esc(s.suggestion.number)} (${esc((s.suggestion.status || '').replace(/_/g, ' '))}) <button class="btn s p" onclick="scadaUseSuggestion(${s.id})">Use it</button> <button class="btn s" onclick="scadaDismissSuggestion(${s.id})">Not it</button></div>` : ''}</td>

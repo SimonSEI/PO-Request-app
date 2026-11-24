@@ -3947,6 +3947,87 @@ class PumpsTest(unittest.TestCase):
             conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
             conn.commit()
 
+    def test_scada_draft_not_issued_and_client_mismatch(self):
+        """Nov 24 2026, Corsa: the tab's #37401 was still a draft in Jobber - it isn't "already invoiced"; drafting
+        Wettech's bill answers "Draft #37401 already exists" (open / link). And a row whose quote is under another
+        client than that year's invoice is flagged and gets a to-do."""
+        conn = P._conn()
+        ins = ("INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years, jobber_names, "
+               "notes, updated_by, updated_at, quote) VALUES (?, '2026-11-01', 'Annual Subscription - SCADA', '$600.00', "
+               "'Wettech', ?, ?, '', 'test', '2026-11-01', ?)")
+        cur = conn.execute(ins, ('Corsadraft Condos', json.dumps({'2026': '37401'}), 'Corsadraft Condos',
+                                 json.dumps({'id': 'Q-CD1', 'number': '9203', 'status': 'approved', 'year': '2026'})))
+        sid = cur.lastrowid
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_name, total, created_at, "
+                     "category, ignored, web_uri) VALUES ('I-CD1', 'invoice', '37401', 'SCADA Annual Subscription Renewal "
+                     "2026-2027', 'draft', 'Corsadraft Condos', 600, '2026-11-02', 'scada', 0, 'https://jobber/i/37401')")
+        conn.execute("INSERT INTO pump_jobber_items (jobber_id, kind, number, title, status, client_name, total, created_at, "
+                     "category, ignored) VALUES ('Q-CD1', 'quote', '9203', 'SCADA renewal', 'approved', "
+                     "'Stockdraft Development', 600, '2026-10-02', 'scada', 0)")
+        cid = P.create_case(conn, {'title': 'SCADA renewal', 'client_name': 'Corsadraft Condos'}, 'test')
+        conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, client_name, total, file_name, case_id, "
+                     "created_at) VALUES ('bill', 'filed', 'Wettech', 'W-CD1', 'Corsadraft Condos', 400, 'cd.pdf', ?, "
+                     "'2026-11-03')", (cid,))
+        did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.commit()
+        try:
+            row = dict(conn.execute('SELECT * FROM pump_scada_accounts WHERE id=?', (sid,)).fetchone())
+            self.assertEqual(P.scada_year_invoices(conn, row, '2026'), [], 'a draft is not issued')
+            lines = [{'name': 'SCADA', 'description': 'SCADA Annual Subscription Renewal 2026-2027', 'quantity': 1,
+                      'unit_price': 600}]
+            with self.assertRaises(P.ExistingDraft) as e:
+                P.create_draft_invoice(did, 'C-CD', lines, 'SCADA renewal', force=True)
+            self.assertIn('Draft #37401 already exists', str(e.exception))
+            self.assertEqual(e.exception.rec['uri'], 'https://jobber/i/37401')
+            r = self.c.post(f'/pumps/api/docs/{did}/invoice', json={'client_id': 'C-CD', 'line_items': lines,
+                                                                   'subject': 'SCADA renewal'})
+            self.assertEqual(r.status_code, 409)
+            self.assertEqual(r.get_json()['existing_draft']['number'], '37401')
+            # issued now: counted, and the quote under Stock Development is flagged
+            conn.execute("UPDATE pump_jobber_items SET status='awaiting_payment' WHERE jobber_id='I-CD1'")
+            conn.commit()
+            self.assertEqual([i['number'] for i in P.scada_year_invoices(conn, row, '2026')], ['37401'])
+            mine = next(d for d in P.scada_rows(conn) if d['id'] == sid)
+            self.assertEqual(mine['client_mismatch']['quote_client'], 'Stockdraft Development')
+            self.assertEqual(mine['client_mismatch']['invoice'], '37401')
+        finally:
+            conn.execute('DELETE FROM pump_scada_accounts WHERE id=?', (sid,))
+            conn.execute("DELETE FROM pump_jobber_items WHERE jobber_id IN ('I-CD1', 'Q-CD1')")
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
+            conn.commit()
+            conn.close()
+
+    def test_bill_matched_to_job_links_its_invoice(self):
+        """Nov 24 2026, Wettech #29386 matched to Corsa's job #14766 kept a blank invoice: the job's invoice (not on
+        another item, nearest the bill's date, not voided) is linked on the Pumps job and the bill too."""
+        conn = P._conn()
+        cid = P.create_case(conn, {'title': 'Corsa pump', 'client_name': 'Corsalink'}, 'test')
+        conn.execute("INSERT INTO pump_docs (kind, status, vendor, doc_number, client_name, total, file_name, case_id, "
+                     "doc_date, created_at) VALUES ('bill', 'filed', 'Wettech', '29386', 'Corsalink', 400, 'cl.pdf', ?, "
+                     "'2026-11-10', '2026-11-12')", (cid,))
+        did = conn.execute('SELECT last_insert_rowid()').fetchone()[0]
+        conn.commit()
+        conn.close()
+        saved = (P.job_invoices, P.link_jobber_invoice, P.find_job_by_number, P._link_item)
+        got = []
+        P.job_invoices = lambda jid: [{'id': 'I-V', 'number': '37500', 'status': 'voided', 'date': '2026-11-10'},
+                                      {'id': 'I-N', 'number': '37401', 'status': 'draft', 'date': '2026-11-09'},
+                                      {'id': 'I-O', 'number': '36000', 'status': 'paid', 'date': '2025-11-01'}]
+        P.link_jobber_invoice = lambda c, n, a: got.append((c, n, a))
+        P.find_job_by_number = lambda n: {'jobber_id': 'J14766', 'number': '14766', 'title': 'Corsa'}
+        P._link_item = lambda conn, jid, c, a: None
+        try:
+            P.pm_apply_match(did, 'job', '14766', 'Pump Manager')
+            self.assertEqual(got, [(cid, '37401', 'Pump Manager')])
+        finally:
+            P.job_invoices, P.link_jobber_invoice, P.find_job_by_number, P._link_item = saved
+            conn = P._conn()
+            conn.execute("UPDATE pump_cases SET status='cancelled' WHERE id=?", (cid,))
+            conn.execute("UPDATE pump_docs SET status='dismissed' WHERE id=?", (did,))
+            conn.commit()
+            conn.close()
+
     def test_wettech_letter_quote_without_pleased_to_quote(self):
         """Nov 5 2026, FSW Ft Myers: Wettech's letter went "RE: FSW Ft Myers", the work, "Your Cost ---- $ 1338.98" -
         no "We are pleased to quote you". Read as "other" with no description (PO@ left it for a person, and our
