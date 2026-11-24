@@ -54,9 +54,11 @@ offered.
 
 ## Agent API: Pump Manager acting directly (Nov 2026)
 
-Pump Manager can also read and act without a click. Every call carries
-`Authorization: Bearer <PUMP_MANAGER_WEBHOOK_KEY>`, the same key the app sends with questions. Without that
-key, or with a wrong one, the call gets a 401.
+Pump Manager can also read and act without a click. Every call carries `PUMP_MANAGER_WEBHOOK_KEY` (the same key
+the app sends with questions; find its value in Railway → Office App → Variables). Any of these works:
+`Authorization: Bearer <key>`, `Authorization: <key>`, or `X-Api-Key: <key>`. Pump Manager's reply token
+(`PUMP_APP_REPLY_TOKEN`) is accepted the same way. Without a key, or with a wrong one, the call gets a 401.
+`GET /pumps/api/agent` lists the endpoints and action types.
 
 ### Read
 
@@ -65,7 +67,8 @@ key, or with a wrong one, the call gets a 401.
 | `/pumps/api/agent/jobs?status=open\|all&q=` | Jobs with client, Jobber client and property, Jobber job #, linked quote/invoice/request, synced Jobber items, vendor bills, steps, status, to-dos |
 | `/pumps/api/agent/jobs/<id>` | One job, plus its description, suggested quote matches and the last 50 history entries |
 | `/pumps/api/agent/bills` | Vendor bills to pay and bills paid lately (read only) |
-| `/pumps/api/agent/maintenance?month=YYYY-MM` | This month's maintenance visits and who has been told |
+| `/pumps/api/agent/maintenance?month=YYYY-MM` | The month's maintenance visits: told, visit done, the vendor's invoice in, our invoice # (from Jobber or typed) |
+| `/pumps/api/agent/scada` | SCADA rows: state (incl. Awaiting payment), years, renewal quote/job/invoice, a renewal found in Jobber to confirm |
 | `/pumps/api/agent/todos` | Open to-dos |
 | `/pumps/api/agent/actions` | The action types and their params |
 
@@ -80,6 +83,15 @@ key, or with a wrong one, the call gets a 401.
 | `add_note` | `case_id`, `text` | Adds a note to the job's history |
 | `set_step` | `case_id`, `step`, `value` (`YYYY-MM-DD` done that day, `""` not done, `"na"` not needed) | Ticks, unticks or skips one step |
 | `link_quote` | `case_id`, `number` | Links a synced Jobber quote, replacing an archived or wrong-client one |
+| `link_invoice` | `case_id`, `number` | Links our Jobber invoice to the job's vendor bill |
+| `visit_done` | `account`, `vendor` (Wettech/Gulfshore), `month` (YYYY-MM), `done` | Marks a maintenance visit done (or not) |
+| `our_invoice` | `account`, `month`, `number` (`""` clears) | Our invoice # for the account's visit that month |
+| `told` | `account`, `vendor`, `month`, `told`, `how` | The vendor told (or not) of the visit |
+| `scada_renewal` | `scada_id` (or client), `year`, `quote`, `job`, `invoice` | Records a SCADA renewal; the invoice # moves the renewal date on |
+| `ok_to_pay` | `case_id`, `undo` | Says a vendor bill can be paid (never marks it paid) |
+| `create_todo` / `dismiss_todo` | `title`, `detail`, `due_on` / `todo_id` | Adds a to-do / ticks one done |
+| `untrack` | `case_id`, `reason` | Not a Wettech job: takes it off Pumps (soft - cancelled, kept, Restore brings it back) |
+| `no_track_account` | `account`, `on` | An account that isn't Wettech's pump work: its Jobber records aren't tracked |
 
 `status` also takes `waiting_quote`, `quote_received` and `waiting_approval`.
 
