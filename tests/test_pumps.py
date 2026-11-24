@@ -25,7 +25,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 TMP = tempfile.mkdtemp(prefix='pumps_test_')
 os.environ.update(SECRET_KEY='test-secret-key-0123456789abcdef-pumps', DATA_DIR=TMP, PUMPS_AUTO_SCAN='false',
-                  OPENCLAW_API_KEY='test-openclaw-key', WEBSITE_URL='https://office.example.com')
+                  OPENCLAW_API_KEY='test-openclaw-key', WEBSITE_URL='https://office.example.com',
+                  PUMPS_DIGEST_TO='office@stahlman-england.com', AR_FROM_EMAIL='office@stahlman-england.com')
 os.environ.pop('ANTHROPIC_API_KEY', None)
 os.environ.pop('JOBBER_API_TOKEN', None)
 
@@ -372,7 +373,7 @@ class PumpsTest(unittest.TestCase):
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
             res = P.ingest_document('10-26  Spanish Wells.docx', buf.getvalue(), source='email', actor='email scan',
-                                    email={'uid': 'sw-1', 'from': 'simon@stahlman-england.com',
+                                    email={'uid': 'sw-1', 'from': 'office@stahlman-england.com',
                                            'subject': 'FW: Inv 29099', 'preview': ''})
         finally:
             P.JOBBER_STATIC_TOKEN = saved
@@ -402,7 +403,7 @@ class PumpsTest(unittest.TestCase):
         P.JOBBER_STATIC_TOKEN, saved = 'test-token', P.JOBBER_STATIC_TOKEN
         try:
             again = P.ingest_document('10-26  Spanish Wells.docx', buf.getvalue(), source='email', actor='email scan',
-                                      email={'uid': 'sw-2', 'from': 'simon@stahlman-england.com',
+                                      email={'uid': 'sw-2', 'from': 'office@stahlman-england.com',
                                              'subject': 'FW: Inv 29099', 'preview': ''})
         finally:
             P.JOBBER_STATIC_TOKEN = saved
@@ -2007,7 +2008,7 @@ class PumpsTest(unittest.TestCase):
         text = P.extract_text('Egret.docx', buf.getvalue())
         self.assertIn('wettec@verizon.net', text)
         res = P.ingest_document('Egret Landing pump.docx', buf.getvalue(), source='email', actor='email scan',
-                                email={'uid': 'fw-1', 'from': 'simon@stahlman-england.com',
+                                email={'uid': 'fw-1', 'from': 'office@stahlman-england.com',
                                        'subject': 'FW: Egret Landing', 'preview': ''})
         self.assertEqual((res['kind'], res['review']), ('quote', ''), res)
         doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
@@ -2015,7 +2016,7 @@ class PumpsTest(unittest.TestCase):
         # A PDF forward whose only Wettech mark is the forwarded header in the email body.
         self.texts['fw-invoice.pdf'] = 'INVOICE\nBill To Stahlman-England\nRE: Egret Landing\nTotal $840.00'
         res = P.ingest_document('fw-invoice.pdf', b'%PDF fw', source='email', actor='email scan',
-                                email={'uid': 'fw-2', 'from': 'simon@stahlman-england.com', 'subject': 'FW: Invoice',
+                                email={'uid': 'fw-2', 'from': 'office@stahlman-england.com', 'subject': 'FW: Invoice',
                                        'preview': 'From: Tom Morgan <tomm@wettec.biz> Sent: Monday'})
         doc = self.c.get(f"/pumps/api/docs/{res['doc_id']}").get_json()['doc']
         self.assertEqual(doc['vendor'], 'Wettech')
@@ -2192,8 +2193,8 @@ class PumpsTest(unittest.TestCase):
             P.graph_send = saved
         self.assertEqual(len(sent), 1, 'once per job')
         # The mailbox scan doesn't read the approval email as a service call (Lely, quote 9152).
-        self.assertTrue(P.from_this_app('Simon <simon@stahlman-england.com>', sent[0][1]))
-        self.assertIsNone(P.handle_service_call_email('m9152', 'simon@stahlman-england.com', sent[0][1],
+        self.assertTrue(P.from_this_app('Simon <office@stahlman-england.com>', sent[0][1]))
+        self.assertIsNone(P.handle_service_call_email('m9152', 'office@stahlman-england.com', sent[0][1],
                                                       'Lely approved our quote #9152. Next: send the approved pump quote'))
         to, subject, html = sent[0]
         self.assertEqual(to, P.DIGEST_TO)
@@ -4017,6 +4018,46 @@ class PumpsTest(unittest.TestCase):
         doc['line_items'][0]['description'] = 'Replace check valve'
         self.assertEqual(P.suggest_invoice(doc)['subject'], 'Pump service - The Retreat at Ft Myers')
 
+    def test_scada_renewal_invoiced_early_counts_this_year_and_awaits_payment(self):
+        """Nov 2026, the office: a SCADA renewal invoiced within a few weeks of its due date counts for that year's
+        renewal, not the year before; and an issued, unpaid renewal shows "Awaiting payment", not Overdue."""
+        self.assertEqual(P.scada_invoice_year('Annual SCADA subscription renewal', '2025-12-15', '2024-01-05'), '2026')
+        self.assertEqual(P.scada_invoice_year('Annual SCADA subscription renewal', '2025-10-01', '2024-01-05'), '2025')
+        self.assertEqual(P.scada_invoice_year('SCADA 2025-2026 Renewal', '2026-01-10', '2024-01-05'), '2025')
+        self.assertEqual(P.scada_invoice_year('Annual SCADA subscription renewal', '2026-03-01', ''), '2026')
+        conn = P._conn()
+        try:
+            cur = conn.execute("INSERT INTO pump_scada_accounts (client, renewal_date, product, our_bill, vendor, years, "
+                               "jobber_names, notes, updated_by, updated_at) VALUES ('Earlybird Lakes', '2024-01-05', "
+                               "'Annual Subscription - SCADA', '$600.00', 'Wettech', ?, 'Earlybird Lakes', '', 'test', "
+                               "'2026-01-01')", (json.dumps({'2025': '30001', '2026': '38001'}),))
+            sid = cur.lastrowid
+            conn.commit()
+            inv = lambda num, issued, status: {
+                'invoiceNumber': num, 'invoiceStatus': status, 'issuedDate': issued, 'client': {'name': 'Earlybird Lakes'},
+                'lineItems': {'nodes': [{'name': 'SCADA', 'description': 'Renewal of annual cellular subscription for SCADA'}]}}
+            # Filed under 2026 by the old rule, issued Dec 15 2026 for the Jan 5 2027 renewal: moves to 2027.
+            self.assertEqual(P.record_scada_invoice(conn, inv('38001', '2026-12-15', 'awaiting_payment')), 'moved')
+            row = dict(conn.execute('SELECT years, year_status FROM pump_scada_accounts WHERE id=?', (sid,)).fetchone())
+            self.assertEqual(json.loads(row['years']), {'2025': '30001', '2027': '38001'})
+            self.assertEqual(json.loads(row['year_status']), {'2027': 'awaiting_payment'})
+            today = P._today
+            P._today = lambda: date(2026, 12, 20)
+            try:
+                r = next(x for x in P.scada_rows(conn) if x['id'] == sid)
+                self.assertEqual(r['state'], 'awaiting_payment')
+                self.assertEqual(r['awaiting'], {'year': '2027', 'number': '38001', 'status': 'awaiting_payment'})
+                # Paid: no longer awaiting.
+                self.assertEqual(P.record_scada_invoice(conn, inv('38001', '2026-12-15', 'paid')), 'status')
+                r = next(x for x in P.scada_rows(conn) if x['id'] == sid)
+                self.assertNotEqual(r['state'], 'awaiting_payment')
+            finally:
+                P._today = today
+        finally:
+            conn.execute("DELETE FROM pump_scada_accounts WHERE client='Earlybird Lakes'")
+            conn.commit()
+            conn.close()
+
     def test_close_job_answers_what_to_do_with_unfinished_visits(self):
         """Oct 29 2026 (Ana's Place #14622): Close job in Jobber failed - jobClose needs a choice for unfinished visits
         that nothing gave. It picks completing past visits / removing future ones; else it says what Jobber needs."""
@@ -4916,7 +4957,7 @@ class PumpsTest(unittest.TestCase):
             r = self.c.post('/pumps/api/digest/send', json={}).get_json()
             self.assertTrue(r['sent'], r)
             m = sent[-1][1]['message']
-            self.assertEqual(m['toRecipients'][0]['emailAddress']['address'], 'simon@stahlman-england.com')
+            self.assertEqual(m['toRecipients'][0]['emailAddress']['address'], 'office@stahlman-england.com')
             self.assertIn('Call the Caymas board', m['body']['content'])
             self.assertTrue(m['subject'].startswith('Pumps today'))
             # The 8am send happens once a weekday.

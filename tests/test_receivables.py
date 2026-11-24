@@ -19,7 +19,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 TMP = tempfile.mkdtemp(prefix='receivables_test_')
 os.environ.update(SECRET_KEY='test-secret-key-0123456789abcdef-ar', DATA_DIR=TMP, PUMPS_AUTO_SCAN='false',
-                  WORKORDERS_AUTO_RUN='false', AR_AUTO_RUN='false', WEBSITE_URL='https://office.example.com')
+                  WORKORDERS_AUTO_RUN='false', AR_AUTO_RUN='false', WEBSITE_URL='https://office.example.com',
+                  AR_FROM_EMAIL='office@stahlman-england.com', PUMPS_DIGEST_TO='office@stahlman-england.com')
 os.environ.pop('ANTHROPIC_API_KEY', None)
 
 import app as A  # noqa: E402
@@ -514,7 +515,7 @@ class FollowupTests(Base):
         # A person was told it's waiting, and nothing went to the owner.
         sent_to = [c[2]['json']['toRecipients'][0]['emailAddress']['address'] for c in self.graph.calls
                    if c[0] == 'POST' and c[1].endswith('/messages') and 'json' in c[2]]
-        self.assertEqual(sent_to, ['simon@stahlman-england.com'])
+        self.assertEqual(sent_to, ['office@stahlman-england.com'])
         self.assertTrue(any('Approve' in c[2]['json']['subject'] for c in self.graph.calls
                             if c[0] == 'POST' and c[1].endswith('/messages')))
         # Even with automatic sending on, it is never sent without a person approving it.

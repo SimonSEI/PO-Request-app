@@ -14735,7 +14735,7 @@ def h_maint_delete(actor, aid):
 
 APPROVER = os.environ.get('PUMPS_APPROVER', 'Simon Weardon')
 AUTO_DRAFT_INVOICES = False   # never by itself: a bill waits on "Draft invoice" for a person (Oct 22 2026)
-DIGEST_TO = os.environ.get('PUMPS_DIGEST_TO', 'simon@stahlman-england.com')
+DIGEST_TO = os.environ.get('PUMPS_DIGEST_TO', '')   # set on Railway (Nov 2026) - no address in the code
 DIGEST_HOUR = int(os.environ.get('PUMPS_DIGEST_HOUR', '8') or 8)
 SERVICE_CALL_DAYS = int(os.environ.get('PUMPS_SERVICE_CALL_DAYS', '14') or 14)
 SERVICE_WORDS = re.compile(r'\b(pumps?|pump\s+station|scada|divers?|aerators?|fountains?|lake\s+filters?|'

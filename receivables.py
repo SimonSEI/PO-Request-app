@@ -14,7 +14,7 @@ every hour (or "Run now"):
      upload; a dispute or question goes to a person.
   3. Follow-ups: invoices due for a reminder are grouped (one email per install
      job, one per customer for service calls), written in a tone that gets firmer
-     the later the invoice is, and sent from simon@stahlman-england.com (Settings)
+     the later the invoice is, and sent from the office mailbox (Settings; AR_FROM_EMAIL)
      with the invoice PDFs and any uploaded documents attached, or left as drafts
      until "Send emails automatically" is on.
   4. Retainage and liens: retainage (an invoice paid all but 5% or 10%) is held
@@ -80,7 +80,7 @@ DEFAULT_STAGES = [
 ]
 
 DEFAULT_SETTINGS = {
-    'from_email': os.environ.get('AR_FROM_EMAIL', 'simon@stahlman-england.com'),
+    'from_email': os.environ.get('AR_FROM_EMAIL', ''),   # set on Railway (Nov 2026) - no address in the code
     'cc': '',                       # copied on every follow-up (e.g. the office)
     'signature': 'Thank you,\nSimon Weardon\nStahlman-England Irrigation',
     'auto_send': False,             # send follow-ups on their own (else they wait as drafts)
