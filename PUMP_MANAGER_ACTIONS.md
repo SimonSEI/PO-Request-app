@@ -92,6 +92,7 @@ the app sends with questions; find its value in Railway → Office App → Varia
 | `create_todo` / `dismiss_todo` | `title`, `detail`, `due_on` / `todo_id` | Adds a to-do / ticks one done |
 | `untrack` | `case_id`, `reason` | Not a Wettech job: takes it off Pumps (soft - cancelled, kept, Restore brings it back) |
 | `no_track_account` | `account`, `on` | An account that isn't Wettech's pump work: its Jobber records aren't tracked |
+| `bill_fields` | `doc_id`, `vendor`, `total`, `bill_date` (any of them) | Corrects a vendor bill as read (e.g. read without Claude: vendor and amount blank). Never marks it paid |
 
 `status` also takes `waiting_quote`, `quote_received` and `waiting_approval`.
 

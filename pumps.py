@@ -670,7 +670,22 @@ SEED_SITE_ALIASES = [
      'client_name': 'Hodges Funeral Home at Naples Memorial Gardens (David Luginbuel)',
      'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzU2Njc0MDU3', 'property_label': '12777 Florida 82, Lehigh Acres',
      'note': 'Wettech still writes "Lee Memorial" (Well 6, Lehigh Acres) - it is the Hodges Funeral Home account.'},
+    # SiteOne's pump station PM bills say "S-6270 Naples Memorial" (Nov 2026): Hodges Funeral Home at Naples Memorial
+    # Gardens, 525 111th Ave N, billed on the recurring job #1865 "Tri-Annual Pump 1125".
+    {'place': 'Naples Memorial', 'area': '', 'client_id': 'Z2lkOi8vSm9iYmVyL0NsaWVudC8zODg2MDA3MQ==',
+     'client_name': 'Hodges Funeral Home at Naples Memorial Gardens (David Luginbuel)',
+     'property_id': 'Z2lkOi8vSm9iYmVyL1Byb3BlcnR5LzQxODk5ODA5', 'property_label': '525 111th Avenue North, Naples',
+     'job_id': 'Z2lkOi8vSm9iYmVyL0pvYi80MzQ4MTI4OA==', 'job_label': '#1865 Tri-Annual Pump 1125', 'any_name': 1,
+     'note': 'SiteOne bills "Naples Memorial" (its pump station PM) - Hodges Funeral Home, job #1865 Tri-Annual Pump 1125.'},
 ]
+
+# Vendors on a flat maintenance contract: their bill is paid from the client's recurring job price - never re-billed
+# at the bill plus markup; the period's invoice on that job is linked (SiteOne at Hodges, Nov 2026).
+FLAT_CONTRACT_VENDORS = ('SiteOne',)
+
+
+def is_flat_bill(doc):
+    return (doc or {}).get('kind') == 'bill' and (doc.get('vendor') or '') in FLAT_CONTRACT_VENDORS
 
 
 def init_db():
@@ -2046,6 +2061,18 @@ def _regex_extract(text, sender='', subject='', filename=''):
     m = re.search(r'\bTotal\b\s*\$?\s*([\d,]+\.\d{2})', text)
     if m:
         out['total'] = _money(m.group(1))
+    else:
+        # "Total: $675.00", "Amount Due: 675.00", "Invoice Total", "Balance Due" (SiteOne #172852774-001, Nov 2026).
+        hits = re.findall(r'(?<!sub)(?<!sub )\b(?:invoice\s+)?(?:total(?:\s+due)?|amount\s+due|balance\s+due)\b\s*:?\s*\$?\s*'
+                          r'([\d,]+\.\d{2})', text, re.I)
+        if hits:
+            out['total'] = _money(hits[-1])
+    if not out['vendor']:
+        # Whoever we're told to pay ("Please remit payment to:" and the name on the next line).
+        m = re.search(r'remit\s+(?:payment\s+)?to\s*:?\s*\n?\s*([^\n]{3,80})', text, re.I)
+        if m:
+            name = m.group(1).strip(' :')
+            out['vendor'] = _vendor_display(name) or name[:60]
     m = re.search(r'W/?O\s*(?:No\.?|#)\s*:?\s*(\w+)', text, re.I)
     if m:
         out['wo_number'] = m.group(1)
@@ -2101,7 +2128,34 @@ def _regex_extract(text, sender='', subject='', filename=''):
                                 out['client_name'] or '', flags=re.I)
     if re.match(r'\s*gulf\s*shore', out['vendor'] or '', re.I):
         _gulfshore_fields(text, subject, filename, out)
+    if (out['vendor'] or '') == 'SiteOne':
+        _siteone_fields(text, out)
     return out
+
+
+def _siteone_fields(text, out):
+    """SiteOne's pump station PM invoice: their invoice # ("172852774-001"), the PO that names the site
+    ("S-6270 Naples Memorial") and the Ship To name - matched to the client like any site label."""
+    m = re.search(r'invoice\s*(?:#|no\.?|number)?\s*:?\s*(\d{6,}-\d{2,3})\b', text, re.I) or \
+        re.search(r'\b(\d{8,}-\d{3})\b', text)
+    if m:
+        out['doc_number'] = m.group(1)
+    m = re.search(r'invoice\s+date\s*:?\s*(\d{1,2}/\d{1,2}/\d{2,4})', text, re.I)
+    if m:
+        out['doc_date'] = _iso_date(m.group(1))
+    m = re.search(r'(?:P\.?\s?O\.?|purchase\s+order)\s*(?:#|no\.?|number)?\s*:?\s*\n?\s*([A-Z]{1,3}-?\d{2,})\s+([A-Za-z][^\n]{2,60})',
+                  text, re.I)
+    if m:
+        out['po_number'] = m.group(1)[:20]
+        out['client_name'] = m.group(2).strip(' -')
+    m = re.search(r'ship\s*to\s*:?\s*\n?\s*([^\n]{3,80})', text, re.I)
+    if m:
+        out['site'] = m.group(1).strip()
+        if not out.get('client_name'):
+            out['client_name'] = out['site']
+    out['category'] = 'maintenance'
+    if not out.get('description'):
+        out['description'] = 'Pump station PM'
 
 
 def site_account(label, conn=None):
@@ -3251,6 +3305,91 @@ def check_report_only_bills(actor='Jobber sync'):
     return done
 
 
+def flat_job_id(conn, doc, case):
+    """The recurring job a flat-contract vendor's bill is paid from: the site name's job (Naples Memorial ->
+    #1865), else the account's own (Accounts tab)."""
+    alias = match_site_alias(doc, case, conn)
+    if alias and alias.get('job_id'):
+        return alias['job_id'], alias.get('job_label') or ''
+    name = (case or {}).get('client_name') or doc.get('client_name') or ''
+    for r in conn.execute("SELECT name, jobber_job_id, jobber_job_label FROM pump_maint_accounts WHERE COALESCE(jobber_job_id, '')!=''"):
+        if name and (r['name'] == name or _same_account(r['name'], name)):
+            return r['jobber_job_id'], r['jobber_job_label'] or ''
+    return '', ''
+
+
+def check_flat_billed(case_id, actor='Pumps'):
+    """A flat-contract vendor's bill (SiteOne's pump station PM at Hodges, tri-annual): our invoice for that period on
+    the client's recurring job (#37144 on job #1865) is linked - no invoice of its own, no markup. Not there yet: a
+    to-do to bill the period on the job at the contract price. Nothing changes in Jobber."""
+    conn = _conn()
+    try:
+        case = conn.execute('SELECT * FROM pump_cases WHERE id=?', (case_id,)).fetchone()
+        row = conn.execute("SELECT * FROM pump_docs WHERE case_id=? AND kind='bill' AND status != 'dismissed' "
+                           'ORDER BY id DESC', (case_id,)).fetchone()
+        if not case or not row:
+            return None
+        case, doc = dict(case), _doc_dict(row)
+        if (json.loads(case.get('jobber') or '{}').get('invoice') or {}).get('id'):
+            return {'billed': True}
+        job_id, job_label = flat_job_id(conn, doc, case)
+        taken = {r[0] for r in conn.execute("SELECT json_extract(jobber, '$.invoice.id') FROM pump_cases WHERE id != ? "
+                                            "AND status != 'cancelled'", (case_id,)) if r[0]}
+    finally:
+        conn.close()
+    found, err = None, ''
+    if job_id and jobber_status()['connected']:
+        try:
+            when = date.fromisoformat(_iso_date(doc.get('doc_date')) or _today().isoformat())
+            invs = [i for i in job_invoices(job_id) if i['status'] not in ('voided', 'bad_debt') and i['id'] not in taken
+                    and i['date'] and abs((date.fromisoformat(i['date']) - when).days) <= 75]
+            found = min(invs, key=lambda i: abs((date.fromisoformat(i['date']) - when).days)) if invs else None
+        except (JobberError, ValueError) as e:
+            err = str(e)
+    elif not job_id:
+        err = "no recurring Jobber job for the site (Accounts tab)"
+    else:
+        err = 'Jobber is not connected'
+    num = f" #{doc['doc_number']}" if doc.get('doc_number') else ''
+    key = f"flat-unbilled:{doc['id']}"
+    if found:
+        try:
+            link_jobber_invoice(case_id, found['number'], actor)
+        except ValueError as e:
+            found, err = None, str(e)
+    conn = _conn()
+    try:
+        if found:
+            conn.execute('UPDATE pump_todos SET done_at=?, done_by=? WHERE key=? AND done_at IS NULL', (_now_text(), actor, key))
+            _event(conn, actor, 'billed out', f"{doc.get('vendor')}{num} is paid from the contract - our invoice "
+                                              f"#{found['number']} on job {job_label or ''}".strip(), case_id=case_id,
+                   doc_id=doc['id'])
+        else:
+            add_todo(conn, key, f"{doc.get('vendor')} bill{num} - {case.get('client_name') or doc.get('client_name')}: "
+                                "period not billed yet",
+                     f"Flat-contract maintenance: bill the period on {('job ' + job_label) if job_label else 'the recurring job'} "
+                     f"at the contract price (no markup), then it's linked here and payable"
+                     f"{' (' + err + ')' if err else ''}.", {'case_id': case_id})
+        conn.commit()
+    finally:
+        conn.close()
+    return {'billed': bool(found), 'invoice': found, 'error': err}
+
+
+def check_all_flat_bills(actor='Jobber sync'):
+    """Every flat-contract vendor bill not linked to our invoice yet: looked for again."""
+    conn = _conn()
+    try:
+        ids = [r[0] for r in conn.execute(
+            f"SELECT DISTINCT c.id FROM pump_cases c JOIN pump_docs d ON d.case_id=c.id AND d.kind='bill' AND "
+            f"d.status != 'dismissed' WHERE c.status='open' AND d.vendor IN ({','.join('?' * len(FLAT_CONTRACT_VENDORS))}) "
+            f"AND COALESCE(json_extract(c.jobber, '$.invoice.id'), '')='' AND COALESCE(c.vendor_quote_number, '')=''",
+            FLAT_CONTRACT_VENDORS)]
+    finally:
+        conn.close()
+    return [check_flat_billed(i, actor) for i in ids]
+
+
 def check_all_diver_bills(actor='Jobber sync'):
     """Every Gulfshore bill not billed out yet: looked for again (the invoice may be made later)."""
     conn = _conn()
@@ -3781,6 +3920,9 @@ def _ingest_document(filename, data, source='upload', email=None, kind_hint=None
         vendor = _vendor_display(f"{sender}\n{subject}\n{email.get('preview', '')}\n{text[:3000]}")
         if source == 'email' and not vendor and not STRONG_TERMS.search(f'{subject}\n{filename}\n{text[:5000]}'):
             return {'skipped': 'not pump related'}
+        if source == 'email' and vendor in FLAT_CONTRACT_VENDORS and \
+                not STRONG_TERMS.search(f'{subject}\n{filename}\n{text[:5000]}') and not re.search(r'\bGT\s+Service\b|\bPM\b|naples\s+memorial|hodges', text[:5000], re.I):
+            return {'skipped': 'SiteOne invoice that is not pump station work'}
         if source == 'email' and _SITEONE_STORE.match(filename or ''):
             # SiteOne's store invoices (siteoneus_15664_...) are parts bought - the main app's Vendor
             # Invoices has them, not pump work to look at (Oct 2026).
@@ -4807,6 +4949,10 @@ def _sync_jobber(full=False, actor='system'):
                 check_all_diver_bills()
             except Exception as e:
                 status['errors'].append(f'Gulfshore bills: {e}')
+            try:
+                check_all_flat_bills()
+            except Exception as e:
+                status['errors'].append(f'Flat-contract bills: {e}')
             try:
                 check_report_only_bills()
             except Exception as e:
@@ -7112,6 +7258,9 @@ def _invoice_suggestion(doc, case=None, client_id=None, job_id=None):
     were quoted (and approved). Otherwise the bill's lines plus any markup."""
     sugg = suggest_invoice(doc, case)
     case = case or {}
+    if is_flat_bill(doc) and not sugg.get('gov'):
+        # A flat maintenance contract is never the bill plus Wettech's markup (Nov 2026).
+        sugg.update(line_items=one_line_items(doc, 0, whole=True), markup_pct=0)
     if job_id and jobber_status()['connected']:
         # A one-off job picked by hand (The Retreat at Ft Myers, Nov 2026: "connect this to an existing job that is
         # not recurring"): the invoice goes on it - at the job's own prices when it has them, else the bill + markup.
@@ -7151,6 +7300,12 @@ def _invoice_suggestion(doc, case=None, client_id=None, job_id=None):
                 billed = next((x for x in job_invoices(job['id']) if x['date'][:7] == f'{y:04d}-{m:02d}'), None)
             except Exception:   # Jobber not saying is no reason to hold up the invoice
                 billed = None
+            if billed and is_flat_bill(doc):
+                # Flat contract (SiteOne at Hodges): that period's invoice is the bill's - link it, never re-bill.
+                sugg.update(note=f"The period is already billed on job #{job.get('number')} (invoice #{billed['number']}) - "
+                                 "link it; a flat-contract bill isn't billed again.", already_billed=billed,
+                            line_items=job['line_items'], markup_pct=0)
+                return sugg
             if billed:
                 sugg['note'] = (f"{date(y, m, 1).strftime('%B')} is already billed on job #{job.get('number')} "
                                 f"(invoice #{billed['number']}) - a service call: the bill + markup.")
@@ -10355,6 +10510,10 @@ def bills_to_pay(conn):
                    f"{': ' + hold['note'] if hold.get('note') else ''} - {why}")
         # Ready to pay PAY_WAIT_DAYS business days after we got the vendor's invoice (Oct 2026, the office:
         # not before, however soon it's invoiced or OK'd).
+        if amount is None:
+            # Read without an amount (Claude down, Nov 2026): not paid until someone checks it.
+            payable = False
+            why = "couldn't read the amount - check it (Edit on Vendor invoices) - " + why
         received = (_iso_date(bill['email_date']) or _iso_date((bill['created_at'] or '')[:10])) if bill else ''
         email_on = add_business_days(date.fromisoformat(received), PAY_WAIT_DAYS).isoformat() if received else ''
         ready = payable and (not email_on or email_on <= _today().isoformat())
@@ -11584,6 +11743,51 @@ def h_doc_update(actor, doc_id):
         conn.commit()
         return {'doc': _doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()),
                 'case_id': filed}
+    finally:
+        conn.close()
+
+
+@api('/docs/<int:doc_id>/bill_fields', methods=('POST',))
+def h_doc_bill_fields(actor, doc_id):
+    """Body: {"vendor", "total", "bill_date"} - correct a vendor bill as read (Claude down, Nov 2026: vendor and
+    amount blank). The item's bill amount follows. Never marks anything paid."""
+    data = _json()
+    conn = _conn()
+    try:
+        row = conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone()
+        if not row or row['kind'] != 'bill':
+            raise ValueError('No such vendor bill')
+        sets, vals, said = [], [], []
+        if 'vendor' in data and str(data['vendor'] or '').strip():
+            v = str(data['vendor']).strip()[:80]
+            v = _vendor_display(v) or v
+            sets.append('vendor=?'); vals.append(v); said.append(f'vendor {v}')
+        if 'total' in data and str(data['total'] if data['total'] is not None else '').strip():
+            t = _money(data['total'])
+            if t is None or t < 0:
+                raise ValueError('The total is a dollar amount')
+            sets.append('total=?'); vals.append(t); said.append(f'total {money_text(t)}')
+        if 'bill_date' in data and str(data['bill_date'] or '').strip():
+            d = _iso_date(str(data['bill_date']))
+            if not d:
+                raise ValueError('The bill date is YYYY-MM-DD')
+            sets.append('doc_date=?'); vals.append(d); said.append(f'date {d}')
+        if not sets:
+            raise ValueError('Nothing to change - vendor, total or bill_date')
+        conn.execute(f"UPDATE pump_docs SET {', '.join(sets)}, review_reason='', updated_at=? WHERE id=?",
+                     (*vals, _now_text(), doc_id))
+        cid = row['case_id']
+        if cid:
+            case = conn.execute('SELECT vendor, vendor_bill_number FROM pump_cases WHERE id=?', (cid,)).fetchone()
+            if 'total=?' in sets:
+                conn.execute('UPDATE pump_cases SET vendor_bill_total=? WHERE id=?', (vals[sets.index('total=?')], cid))
+            if 'vendor=?' in sets and case and (not (case['vendor'] or '').strip() or case['vendor'] == (row['vendor'] or '')):
+                conn.execute('UPDATE pump_cases SET vendor=? WHERE id=?', (vals[sets.index('vendor=?')], cid))
+            _refresh_case(conn, cid)
+        _event(conn, actor, 'vendor bill corrected', f"#{row['doc_number'] or row['id']}: " + ', '.join(said),
+               case_id=cid, doc_id=doc_id)
+        conn.commit()
+        return {'doc': _doc_dict(conn.execute('SELECT * FROM pump_docs WHERE id=?', (doc_id,)).fetchone())}
     finally:
         conn.close()
 
@@ -13275,7 +13479,7 @@ def vendor_invoices(conn, show='all', q='', sort='az'):
         "SELECT * FROM pump_docs WHERE kind='bill' AND status != 'dismissed' ORDER BY id DESC")]
     ids = {d['case_id'] for d in docs if d.get('case_id')}
     cases = {r['id']: dict(r) for r in conn.execute(
-        f"SELECT id, title, client_name, status, jobber, sei_invoice_number, vendor_paid_on, vendor_paid_by "
+        f"SELECT id, title, client_name, status, jobber, sei_invoice_number, vendor_paid_on, vendor_paid_by, vendor "
         f"FROM pump_cases WHERE id IN ({','.join('?' * len(ids))})", list(ids))} if ids else {}
     q = (q or '').strip().lower()
     out, counts = [], {}
@@ -13302,7 +13506,9 @@ def vendor_invoices(conn, show='all', q='', sort='az'):
         if q and q not in hay.lower():
             continue
         out.append({'id': d['id'], 'date': d.get('doc_date') or (d.get('created_at') or '')[:10],
-                    'vendor': d.get('vendor') or 'Wettech', 'number': d.get('doc_number') or '',
+                    # An unknown vendor stays unknown (SiteOne #172852774-001, Nov 2026, showed as "Wettech").
+                    'vendor': d.get('vendor') or c.get('vendor') or '', 'number': d.get('doc_number') or '',
+                    'bill_date': d.get('doc_date') or '', 'no_amount': d.get('total') is None and d.get('subtotal') is None,
                     'client_name': d.get('client_name') or c.get('client_name') or '', 'site': d.get('site') or '',
                     'what': ((d.get('description') or '').strip().splitlines() or [''])[0][:200],
                     'subtotal': d.get('subtotal'), 'total': d.get('total'), 'case_id': d.get('case_id'),
@@ -16334,6 +16540,8 @@ def auto_draft_invoice(doc_id, actor='Pumps (automatic)'):
         return None
     if is_diver_bill(doc):
         return None   # billed with the pump service - see check_diver_billed
+    if is_flat_bill(doc) and not (case.get('vendor_quote_number') or (json.loads(case.get('jobber') or '{}').get('quote') or {}).get('id')):
+        return check_flat_billed(case['id'], actor)   # the contract's period invoice - never the bill + markup
     if ((json.loads(case.get('steps') or '{}').get('invoice_drafted')) or {}).get('na'):
         return None   # nothing to invoice (a report-only account, our own technician's job...)
     j = json.loads(case.get('jobber') or '{}')
@@ -18827,6 +19035,9 @@ PM_AGENT_ACTIONS = {
     'untrack': ("Take an item off Pumps - not a Wettech job (soft: cancelled, kept, can be restored)",
                 {'case_id': 'the item', 'reason': 'optional'}),
     'no_track_account': ("Set an account not tracked (or tracked again)", {'account': 'account name', 'on': 'true | false'}),
+    'bill_fields': ("Correct a vendor bill's vendor, total or bill date as read (never marks it paid)",
+                    {'doc_id': 'the vendor invoice (document id)', 'vendor': 'optional', 'total': 'optional, dollars',
+                     'bill_date': 'optional, YYYY-MM-DD'}),
 }
 # Never through the agent API, whatever the action turns into.
 # (OK to pay is allowed - Nov 2026: it says a bill may be paid; marking it paid is not.)
@@ -18912,6 +19123,18 @@ def agent_action(conn, a):
             raise ValueError(f'No item {cid or "(none given)"} on the watchlist')
         return {'label': f'Not a Wettech job - take {name} off Pumps', 'method': 'POST', 'path': f"/cases/{row['id']}/untrack",
                 'body': {'reason': str(a.get('reason') or '')[:300]}}
+    if t == 'bill_fields':
+        did = str(a.get('doc_id') or '').strip()
+        d_row = conn.execute("SELECT id, vendor, doc_number FROM pump_docs WHERE id=? AND kind='bill'",
+                             (int(did),)).fetchone() if did.isdigit() else None
+        if not d_row:
+            raise ValueError(f'No vendor bill {did or "(none given)"}')
+        body = {k: str(a.get(k)).strip() for k in ('vendor', 'total', 'bill_date') if str(a.get(k) or '').strip()}
+        if not body:
+            raise ValueError('Give vendor, total or bill_date')
+        return {'label': f"Correct vendor bill #{d_row['doc_number'] or d_row['id']}: " +
+                         ', '.join(f'{k} {v}' for k, v in body.items()),
+                'method': 'POST', 'path': f"/docs/{d_row['id']}/bill_fields", 'body': body}
     if t == 'no_track_account':
         acc = account()
         return {'label': f"{acc}: {'not tracked' if truth('on') else 'tracked again'}", 'method': 'POST',
